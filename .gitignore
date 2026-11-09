@@ -1,0 +1,24 @@
+# Go build outputs
+/bin/
+/dist/
+*.test
+*.out
+coverage.out
+
+# Generated local environment/configuration
+.env
+.env.*
+!.env.example
+*.kubeconfig
+.kube/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Local test artifacts
+/tmp/
+/test-results/
