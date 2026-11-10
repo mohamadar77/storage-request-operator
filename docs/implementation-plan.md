@@ -4,22 +4,22 @@ This roadmap translates the approved [design v1.1](design.md) into implementatio
 
 ## Milestone 1 — Kubebuilder scaffold
 
-- [ ] Initialize the Kubebuilder project for Go and controller-runtime.
-- [ ] Select and pin mutually compatible Go, Kubernetes libraries, Kubebuilder, and controller-runtime versions.
-- [ ] Record supported tool versions in the developer documentation and CI.
-- [ ] Configure project metadata, manager entry point, scheme, logging, health checks, readiness checks, and leader election.
-- [ ] Generate the initial CRD, RBAC, manager, and sample directories.
-- [ ] Verify `make manifests`, `make generate`, `go test ./...`, and `go vet ./...` work in a clean checkout.
+- [x] Initialize the Kubebuilder project for Go and controller-runtime.
+- [x] Select and pin mutually compatible Go, Kubernetes libraries, Kubebuilder, and controller-runtime versions.
+- [x] Record supported tool versions in the developer documentation and CI.
+- [x] Configure project metadata, manager entry point, scheme, logging, health checks, readiness checks, and leader election.
+- [x] Generate the initial CRD, RBAC, manager, and sample directories.
+- [x] Verify `make manifests`, `make generate`, `make test`, and `go vet ./...` work in a clean checkout (`go test ./...` additionally needs `make setup-envtest` once for the envtest binaries).
 
 ## Milestone 2 — API types and validation
 
-- [ ] Define `StorageRequestSpec`, storage and lifecycle fields, and status fields in `api/v1alpha1`.
-- [ ] Add the status subresource and structural schema.
-- [ ] Add defaults for access modes, volume mode, and `onDelete`.
-- [ ] Add CEL positive-quantity validation using the Kubernetes 1.29+ quantity library.
-- [ ] Add enum, non-empty, minimum-item, and unique-item validation for the other fields.
-- [ ] Add defensive Go validation using `resource.ParseQuantity`, `Sign`, and supported enums.
-- [ ] Add a valid sample manifest and API validation tests.
+- [x] Define `StorageRequestSpec`, storage and lifecycle fields, and status fields in `api/v1alpha1`.
+- [x] Add the status subresource and structural schema.
+- [x] Add defaults for access modes, volume mode, and `onDelete`.
+- [x] Add CEL positive-quantity validation using the Kubernetes 1.29+ quantity library.
+- [x] Add enum, non-empty, minimum-item, and unique-item validation for the other fields.
+- [x] Add defensive Go validation using `resource.ParseQuantity`, `Sign`, and supported enums.
+- [x] Add a valid sample manifest and API validation tests.
 
 ## Milestone 3 — PVC creation and identity
 

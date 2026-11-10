@@ -1,0 +1,22 @@
+apiVersion: storage.example.io/v1alpha1
+kind: StorageRequest
+metadata:
+  name: app-data
+  labels:
+    app.kubernetes.io/name: storage-request-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  storage:
+    size: 20Gi
+    # storageClassName is optional and omitted here, so the cluster's default
+    # StorageClass is used (including retroactive default assignment). When set
+    # it must be non-empty and is immutable after the PVC is created, e.g.:
+    # storageClassName: fast-ssd
+    accessModes:
+      - ReadWriteOnce
+    volumeMode: Filesystem
+  lifecycle:
+    # Retain (default) leaves the PVC in place when the StorageRequest is
+    # deleted. Delete removes only the exact managed PVC; backend cleanup then
+    # follows the PersistentVolume reclaim policy. Retain is not a backup.
+    onDelete: Retain

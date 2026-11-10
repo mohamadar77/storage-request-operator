@@ -69,8 +69,8 @@ The API details and status semantics are documented in [`docs/api.md`](docs/api.
 
 | Milestone | Deliverable | State |
 |---|---|---|
-| 1 | Kubebuilder scaffold, manager, CRD generation | Not started |
-| 2 | API types, defaults, validation, sample manifest | Not started |
+| 1 | Kubebuilder scaffold, manager, CRD generation | In review |
+| 2 | API types, defaults, validation, sample manifest | In review |
 | 3 | PVC builder, finalizer-before-create, identity and collision handling | Not started |
 | 4 | PVC watches, status conditions, events | Not started |
 | 5 | Immutable-field checks, expansion and failed-resize recovery | Not started |
@@ -94,6 +94,7 @@ The supported platform matrix is a release gate and must be filled in before pub
 - [Architecture](docs/architecture.md) — control flow and component responsibilities
 - [API reference](docs/api.md) — spec, status, conditions, and mutability
 - [Implementation plan](docs/implementation-plan.md) — milestones and engineering tasks
+- [Development guide](docs/development.md) — toolchain versions and local checks
 - [Testing strategy](docs/testing-strategy.md) — unit, envtest, and CSI-backed E2E
 - [Operational safety](docs/operational-safety.md) — ownership, resize, and deletion safeguards
 - [Release checklist](docs/release-checklist.md) — gates before shared-cluster or production use
