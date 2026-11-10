@@ -66,6 +66,10 @@ Expected machine-readable reasons include:
 - `PVCNameConflict`, `OwnershipMismatch`, `ImmutableFieldChange`
 - `ShrinkNotSupported`, `ExpansionNotSupported`, `StorageClassNotFound`
 - `ResizeRecoveryRejected`, `PVCMissing`, `PVCDeleting`, `ResizeFailed`
+- `InvalidSpec` (the spec failed the controller's defensive validation; no PVC was created or changed)
+- `AsExpected` (the `Degraded=False` reason when no problem is detected)
+
+The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`.
 
 A request for a smaller size than an already provisioned PVC may remain usable: `Ready` can remain true when actual capacity still satisfies the request, while `Degraded=True` explains that shrinking is unsupported and the existing claim was left unchanged.
 

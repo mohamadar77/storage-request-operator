@@ -23,16 +23,24 @@ This roadmap translates the approved [design v1.1](design.md) into implementatio
 
 ## Milestone 3 — PVC creation and identity
 
-- [ ] Implement a deterministic PVC builder that sets only operator-owned fields.
-- [ ] Add the request UID annotation and managed labels.
-- [ ] Persist the finalizer before any PVC creation.
-- [ ] Create the PVC and immediately persist its UID to `status.pvcUID`.
-- [ ] Implement crash recovery for the interval between PVC creation and status persistence.
-- [ ] Enforce request UID and recorded PVC UID matching.
-- [ ] Handle `AlreadyExists` by re-reading and verifying identity; never auto-adopt.
-- [ ] Report `PVCMissing` instead of recreating a previously recorded claim.
-- [ ] Detect a PVC already marked for deletion while its request is active.
-- [ ] Test collisions, replacement, deletion, and retry paths.
+- [x] Implement a deterministic PVC builder that sets only operator-owned fields.
+- [x] Add the request UID annotation and managed labels.
+- [x] Persist the finalizer before any PVC creation.
+- [x] Create the PVC and immediately persist its UID to `status.pvcUID`.
+- [x] Implement crash recovery for the interval between PVC creation and status persistence.
+- [x] Enforce request UID and recorded PVC UID matching.
+- [x] Handle `AlreadyExists` by re-reading and verifying identity; never auto-adopt.
+- [x] Report `PVCMissing` instead of recreating a previously recorded claim.
+- [x] Detect a PVC already marked for deletion while its request is active.
+- [x] Test collisions, replacement, deletion, and retry paths.
+
+Milestone 3 notes:
+
+- The controller confirms against the API server (not only the cache) that no PVC UID was ever recorded before it creates a PVC, and re-reads from the API server after `AlreadyExists`.
+- Finalization is Milestone 6. Until then a deleted `StorageRequest` keeps its finalizer and stays in `Terminating`; the controller does not remove the finalizer or touch the PVC.
+- The controller does not watch PVCs yet (Milestone 4). A 30-second fallback requeue picks up binding and conflict changes in the meantime.
+- `Ready` reflects PVC phase and reported capacity only; resize awareness arrives with Milestone 5.
+- Kubernetes Events are added in Milestone 4. Conflicts are reported through conditions and logs for now.
 
 ## Milestone 4 — Watches, status, and events
 
