@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-func ptr[T any](v T) *T { return &v }
+const sizeField = "spec.storage.size"
 
 func newRequest(mutate func(*StorageRequest)) *StorageRequest {
 	sr := &StorageRequest{
@@ -32,7 +32,7 @@ func newRequest(mutate func(*StorageRequest)) *StorageRequest {
 			Storage: StorageSpec{
 				Size:        resource.MustParse("20Gi"),
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				VolumeMode:  ptr(corev1.PersistentVolumeFilesystem),
+				VolumeMode:  new(corev1.PersistentVolumeFilesystem),
 			},
 			Lifecycle: LifecycleSpec{OnDelete: OnDeleteRetain},
 		},
@@ -67,7 +67,7 @@ func TestValidateStorageRequest(t *testing.T) {
 		{
 			name: "valid with storageClassName set",
 			sr: newRequest(func(sr *StorageRequest) {
-				sr.Spec.Storage.StorageClassName = ptr("fast-ssd")
+				sr.Spec.Storage.StorageClassName = new("fast-ssd")
 			}),
 			wantErrs: map[string]field.ErrorType{},
 		},
@@ -76,28 +76,28 @@ func TestValidateStorageRequest(t *testing.T) {
 			sr: newRequest(func(sr *StorageRequest) {
 				sr.Spec.Storage.Size = resource.Quantity{}
 			}),
-			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeRequired},
+			wantErrs: map[string]field.ErrorType{sizeField: field.ErrorTypeRequired},
 		},
 		{
 			name: "negative size is invalid",
 			sr: newRequest(func(sr *StorageRequest) {
 				sr.Spec.Storage.Size = resource.MustParse("-1Gi")
 			}),
-			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeInvalid},
+			wantErrs: map[string]field.ErrorType{sizeField: field.ErrorTypeInvalid},
 		},
 		{
 			name: "astronomically large size is invalid without slow comparison",
 			sr: newRequest(func(sr *StorageRequest) {
 				sr.Spec.Storage.Size = *resource.NewScaledQuantity(1, resource.Scale(2147483647))
 			}),
-			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeInvalid},
+			wantErrs: map[string]field.ErrorType{sizeField: field.ErrorTypeInvalid},
 		},
 		{
 			name: "vanishingly small size is invalid",
 			sr: newRequest(func(sr *StorageRequest) {
 				sr.Spec.Storage.Size = *resource.NewScaledQuantity(1, resource.Scale(-2147483647))
 			}),
-			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeInvalid},
+			wantErrs: map[string]field.ErrorType{sizeField: field.ErrorTypeInvalid},
 		},
 		{
 			name: "largest practical size is valid",
@@ -109,7 +109,7 @@ func TestValidateStorageRequest(t *testing.T) {
 		{
 			name: "empty storageClassName is invalid",
 			sr: newRequest(func(sr *StorageRequest) {
-				sr.Spec.Storage.StorageClassName = ptr("")
+				sr.Spec.Storage.StorageClassName = new("")
 			}),
 			wantErrs: map[string]field.ErrorType{"spec.storage.storageClassName": field.ErrorTypeInvalid},
 		},
@@ -132,7 +132,7 @@ func TestValidateStorageRequest(t *testing.T) {
 		{
 			name: "unsupported volume mode",
 			sr: newRequest(func(sr *StorageRequest) {
-				sr.Spec.Storage.VolumeMode = ptr(corev1.PersistentVolumeMode("Raw"))
+				sr.Spec.Storage.VolumeMode = new(corev1.PersistentVolumeMode("Raw"))
 			}),
 			wantErrs: map[string]field.ErrorType{"spec.storage.volumeMode": field.ErrorTypeNotSupported},
 		},
@@ -147,11 +147,11 @@ func TestValidateStorageRequest(t *testing.T) {
 			name: "multiple errors are aggregated",
 			sr: newRequest(func(sr *StorageRequest) {
 				sr.Spec.Storage.Size = resource.Quantity{}
-				sr.Spec.Storage.StorageClassName = ptr("")
+				sr.Spec.Storage.StorageClassName = new("")
 				sr.Spec.Lifecycle.OnDelete = OnDeletePolicy("Shred")
 			}),
 			wantErrs: map[string]field.ErrorType{
-				"spec.storage.size":             field.ErrorTypeRequired,
+				sizeField:                       field.ErrorTypeRequired,
 				"spec.storage.storageClassName": field.ErrorTypeInvalid,
 				"spec.lifecycle.onDelete":       field.ErrorTypeNotSupported,
 			},

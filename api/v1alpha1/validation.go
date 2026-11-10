@@ -63,10 +63,8 @@ func (sr *StorageRequest) ValidateStorageRequest() field.ErrorList {
 }
 
 func validateStorageRequestSpec(spec *StorageRequestSpec, fldPath *field.Path) field.ErrorList {
-	var allErrs field.ErrorList
-	allErrs = append(allErrs, validateStorageSpec(&spec.Storage, fldPath.Child("storage"))...)
-	allErrs = append(allErrs, validateLifecycleSpec(&spec.Lifecycle, fldPath.Child("lifecycle"))...)
-	return allErrs
+	allErrs := validateStorageSpec(&spec.Storage, fldPath.Child("storage"))
+	return append(allErrs, validateLifecycleSpec(&spec.Lifecycle, fldPath.Child("lifecycle"))...)
 }
 
 func validateStorageSpec(storage *StorageSpec, fldPath *field.Path) field.ErrorList {

@@ -22,8 +22,10 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +60,7 @@ func TestMain(m *testing.M) {
 	// binaries downloaded under bin/k8s via `make setup-envtest`. `make test`
 	// sets KUBEBUILDER_ASSETS explicitly and takes precedence.
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
-		if dir := firstEnvtestBinDir(); dir != "" {
+		if dir := latestEnvtestBinDir(); dir != "" {
 			_ = os.Setenv("KUBEBUILDER_ASSETS", dir)
 		}
 	}
@@ -71,13 +73,17 @@ func TestMain(m *testing.M) {
 	var err error
 	cfg, err = testEnv.Start()
 	if err != nil {
-		panic("failed to start envtest (run `make setup-envtest` to download binaries): " + err.Error())
+		fmt.Fprintf(os.Stderr, "Could not start envtest: %v\n"+
+			"These tests need the Kubernetes API server test binaries. Run `make setup-envtest` "+
+			"once (or use `make test`), or set KUBEBUILDER_ASSETS.\n", err)
+		os.Exit(1)
 	}
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		_ = testEnv.Stop()
-		panic("failed to create client: " + err.Error())
+		fmt.Fprintf(os.Stderr, "Could not create client: %v\n", err)
+		os.Exit(1)
 	}
 
 	code := m.Run()
@@ -85,15 +91,18 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func firstEnvtestBinDir() string {
+// latestEnvtestBinDir returns the last bin/k8s/<version>-<os>-<arch> directory
+// in name order. With several versions installed this prefers the newest one,
+// which is the one `make test` selects by default.
+func latestEnvtestBinDir() string {
 	base := filepath.Join("..", "..", "bin", "k8s")
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return ""
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			abs, err := filepath.Abs(filepath.Join(base, e.Name()))
+	for _, entrie := range slices.Backward(entries) {
+		if entrie.IsDir() {
+			abs, err := filepath.Abs(filepath.Join(base, entrie.Name()))
 			if err == nil {
 				return abs
 			}
