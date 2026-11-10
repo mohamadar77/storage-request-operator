@@ -294,7 +294,9 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 
 			result := reconcileOnce()
 
-			Expect(result.RequeueAfter).To(BeZero())
+			// Even a Ready request is re-checked: nothing else would notice
+			// its PVC being deleted, replaced, or lost.
+			Expect(result.RequeueAfter).To(Equal(fallbackRequeue))
 			got := getRequest()
 			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
 			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
@@ -320,8 +322,45 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 
 			reconcileOnce()
 
-			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonVolumeLost)
+			expectProblem(storagev1alpha1.ReasonVolumeLost)
 			Expect(getPVC().UID).To(Equal(pvc.UID))
+		})
+
+		It("reports Ready when the bound capacity exceeds the requested size", func() {
+			createRequest()
+			pvc := provision()
+			pvc.Status.Phase = corev1.ClaimBound
+			// 100Gi > 20Gi numerically, but "100Gi" < "20Gi" as strings.
+			pvc.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("100Gi")}
+			Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+
+			reconcileOnce()
+
+			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+		})
+
+		It("requeues a provisioning request, the only way binding is noticed without a PVC watch", func() {
+			createRequest()
+			reconcileOnce() // finalizer
+
+			Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue), "the reconcile that creates the PVC")
+			Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue), "later reconciles")
+		})
+
+		It("sets observedGeneration to the generation it processed", func() {
+			createRequest()
+			provision()
+			sr := getRequest()
+			base := sr.DeepCopy()
+			sr.Spec.Lifecycle.OnDelete = storagev1alpha1.OnDeleteDelete
+			Expect(k8sClient.Patch(ctx, sr, client.MergeFrom(base))).To(Succeed())
+
+			reconcileOnce()
+
+			got := getRequest()
+			Expect(got.Generation).To(Equal(int64(2)))
+			Expect(got.Status.ObservedGeneration).To(Equal(int64(2)))
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
 		})
 
 		It("creates no PVC from a spec that fails defensive validation", func() {
@@ -340,6 +379,39 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			})
 
 			_, err := reconcileWith(invalid)
+
+			Expect(err).NotTo(HaveOccurred())
+			expectNoPVC()
+			expectProblem(storagev1alpha1.ReasonInvalidSpec)
+
+			// Once the spec is valid again the PVC is created and the problem clears.
+			reconcileOnce()
+
+			got := getRequest()
+			Expect(got.Status.PVCUID).To(Equal(getPVC().UID))
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+		})
+
+		It("validates the object the PVC is built from, not only the cached copy", func() {
+			createRequest()
+			reconcileOnce() // finalizer
+			// The API server returns a spec the Go validator rejects (an empty
+			// StorageClass, as a looser CRD schema could admit) while the
+			// cached copy is still valid.
+			liveInvalid := interceptor.NewClient(k8sClient, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := c.Get(ctx, k, obj, opts...); err != nil {
+						return err
+					}
+					if sr, ok := obj.(*storagev1alpha1.StorageRequest); ok {
+						sr.Spec.Storage.StorageClassName = new("")
+					}
+					return nil
+				},
+			})
+			r := &StorageRequestReconciler{Client: k8sClient, APIReader: liveInvalid, Scheme: scheme.Scheme}
+
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 
 			Expect(err).NotTo(HaveOccurred())
 			expectNoPVC()
@@ -448,6 +520,132 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 		})
 	})
 
+	Context("stale cache", func() {
+		// cachedAs simulates a cache that still serves an old snapshot of the
+		// StorageRequest. Writes and all other reads go to the API server.
+		cachedAs := func(snapshot *storagev1alpha1.StorageRequest) client.WithWatch {
+			return interceptor.NewClient(k8sClient, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if sr, ok := obj.(*storagev1alpha1.StorageRequest); ok {
+						snapshot.DeepCopyInto(sr)
+						return nil
+					}
+					return c.Get(ctx, k, obj, opts...)
+				},
+			})
+		}
+		// withoutPVCs additionally hides every PVC from the cache.
+		withoutPVCs := func(inner client.WithWatch) client.Client {
+			return interceptor.NewClient(inner, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if isPVC(obj) {
+						return apierrors.NewNotFound(schema.GroupResource{Resource: "persistentvolumeclaims"}, k.Name)
+					}
+					return c.Get(ctx, k, obj, opts...)
+				},
+			})
+		}
+
+		It("does not report PVCMissing when only the cache has not seen the recorded PVC", func() {
+			createRequest()
+			pvc := provision()
+			before := getRequest()
+
+			_, err := reconcileWith(withoutPVCs(k8sClient))
+
+			Expect(err).NotTo(HaveOccurred())
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonProvisioning)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+			Expect(got.ResourceVersion).To(Equal(before.ResourceVersion), "nothing changed, so nothing may be written")
+			Expect(getPVC().UID).To(Equal(pvc.UID))
+		})
+
+		It("does not report PVCMissing when both the request and the PVC cache are stale", func() {
+			createRequest()
+			reconcileOnce()          // finalizer
+			snapshot := getRequest() // before the PVC UID was recorded
+			reconcileOnce()
+			pvc := getPVC()
+
+			_, err := reconcileWith(withoutPVCs(cachedAs(snapshot)))
+
+			Expect(err).NotTo(HaveOccurred())
+			got := getRequest()
+			Expect(got.Status.PVCUID).To(Equal(pvc.UID))
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+			list := &corev1.PersistentVolumeClaimList{}
+			Expect(k8sClient.List(ctx, list, client.InNamespace(namespace))).To(Succeed())
+			Expect(list.Items).To(HaveLen(1))
+		})
+
+		It("never records a replacement PVC from a cached request that predates the recorded UID", func() {
+			sr := createRequest()
+			reconcileOnce()          // finalizer
+			snapshot := getRequest() // before the PVC UID was recorded
+			reconcileOnce()
+			original := getPVC()
+			removePVC()
+			replacement := createForeignPVC(string(sr.UID)) // annotation copied
+
+			_, err := reconcileWith(cachedAs(snapshot))
+
+			Expect(apierrors.IsConflict(err)).To(BeTrue(), "the stale status write must be rejected as a conflict, got: %v", err)
+			Expect(getRequest().Status.PVCUID).To(Equal(original.UID), "the replacement must never be recorded")
+			Expect(getPVC().ResourceVersion).To(Equal(replacement.ResourceVersion))
+
+			// With a current cache the replacement is reported, not adopted.
+			reconcileOnce()
+			expectProblem(storagev1alpha1.ReasonOwnershipMismatch)
+		})
+
+		It("keeps another controller's finalizer the cache has not seen yet", func() {
+			sr := createRequest()
+			snapshot := sr.DeepCopy()
+			base := sr.DeepCopy()
+			sr.Finalizers = []string{"other.example.io/keep"}
+			Expect(k8sClient.Patch(ctx, sr, client.MergeFrom(base))).To(Succeed())
+
+			_, err := reconcileWith(cachedAs(snapshot))
+
+			Expect(apierrors.IsConflict(err)).To(BeTrue(), "the stale finalizer write must be rejected as a conflict, got: %v", err)
+			Expect(getRequest().Finalizers).To(ConsistOf("other.example.io/keep"))
+		})
+
+		It("creates no PVC for a request deleted after the cache snapshot", func() {
+			sr := createRequest()
+			reconcileOnce() // finalizer
+			snapshot := getRequest()
+			Expect(k8sClient.Delete(ctx, sr)).To(Succeed())
+
+			result, err := reconcileWith(cachedAs(snapshot))
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(staleCacheRequeue))
+			expectNoPVC()
+		})
+
+		It("creates no PVC for a request that was recreated with a new UID after the cache snapshot", func() {
+			old := createRequest()
+			reconcileOnce() // finalizer
+			snapshot := getRequest()
+			Expect(k8sClient.Delete(ctx, old)).To(Succeed())
+			current := getRequest()
+			base := current.DeepCopy()
+			current.Finalizers = nil
+			Expect(k8sClient.Patch(ctx, current, client.MergeFrom(base))).To(Succeed())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, &storagev1alpha1.StorageRequest{}))).To(BeTrue())
+			recreated := createRequest()
+			Expect(recreated.UID).NotTo(Equal(old.UID))
+
+			result, err := reconcileWith(cachedAs(snapshot))
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(staleCacheRequeue))
+			expectNoPVC()
+		})
+	})
+
 	Context("collisions", func() {
 		It("reports PVCNameConflict for a same-name PVC without a request UID and leaves it unchanged", func() {
 			createRequest()
@@ -501,7 +699,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 
 			for range 3 {
 				result := reconcileOnce()
-				Expect(result).To(Equal(ctrl.Result{}))
+				Expect(result.RequeueAfter).To(Equal(fallbackRequeue))
 			}
 
 			expectNoPVC()
@@ -586,13 +784,16 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			Expect(getPVC().ResourceVersion).To(Equal(pvc.ResourceVersion))
 		})
 
-		It("creates no PVC for a request deleted before its PVC existed", func() {
+		It("creates no PVC for a request deleted before its PVC existed, and does not requeue or write", func() {
 			sr := createRequest()
 			reconcileOnce() // finalizer
 			Expect(k8sClient.Delete(ctx, sr)).To(Succeed())
+			before := getRequest()
 
-			reconcileOnce()
+			result := reconcileOnce()
 
+			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(getRequest().ResourceVersion).To(Equal(before.ResourceVersion))
 			expectNoPVC()
 		})
 	})

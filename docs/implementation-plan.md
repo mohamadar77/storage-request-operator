@@ -36,11 +36,13 @@ This roadmap translates the approved [design v1.1](design.md) into implementatio
 
 Milestone 3 notes:
 
-- The controller confirms against the API server (not only the cache) that no PVC UID was ever recorded before it creates a PVC, and re-reads from the API server after `AlreadyExists`.
+- Nothing is decided from the cache when a PVC appears to be absent. The controller re-reads the request from the API server before it creates a PVC, re-reads the PVC after `AlreadyExists`, and reports `PVCMissing` only after the API server confirms the recorded PVC is gone.
+- Status and finalizer writes carry the resourceVersion they were computed from, so a decision made on a stale object is rejected as a conflict and retried.
 - Finalization is Milestone 6. Until then a deleted `StorageRequest` keeps its finalizer and stays in `Terminating`; the controller does not remove the finalizer or touch the PVC.
-- The controller does not watch PVCs yet (Milestone 4). A 30-second fallback requeue picks up binding and conflict changes in the meantime.
-- `Ready` reflects PVC phase and reported capacity only; resize awareness arrives with Milestone 5.
+- The controller does not watch PVCs yet (Milestone 4). Every active request, `Ready` ones included, is re-checked on a 30-second fallback requeue, so a PVC that is bound, deleted, replaced, or lost is noticed within that interval.
+- `Ready` reflects PVC phase and reported capacity only; resize awareness arrives with Milestone 5. A `Lost` claim is reported as `Ready=False` and `Degraded=True`, reason `VolumeLost`.
 - Kubernetes Events are added in Milestone 4. Conflicts are reported through conditions and logs for now.
+- Stale-cache, failed-write, and restart paths are tested with client interceptors against envtest. They are not yet tested against a real informer cache under load, and no E2E test creates a `StorageRequest` yet, so the generated RBAC is not exercised in a real cluster.
 
 ## Milestone 4 — Watches, status, and events
 

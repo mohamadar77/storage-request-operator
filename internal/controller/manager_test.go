@@ -31,6 +31,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	storagev1alpha1 "github.com/mohamadar77/storage-request-operator/api/v1alpha1"
@@ -51,6 +52,9 @@ var _ = Describe("StorageRequest controller running in a manager", func() {
 			Scheme:  scheme.Scheme,
 			Metrics: metricsserver.Options{BindAddress: "0"},
 			Cache:   cache.Options{DefaultNamespaces: map[string]cache.Config{ns.Name: {}}},
+			// Controller names are registered process-wide; skip the check so
+			// more than one spec can start a manager with this controller.
+			Controller: config.Controller{SkipNameValidation: new(true)},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect((&StorageRequestReconciler{
