@@ -42,6 +42,8 @@ const (
 	// LabelManaged marks a PVC as actively managed by a StorageRequest. It is
 	// removed when a PVC is retained (detached) during finalization.
 	LabelManaged = "storage.example.io/managed"
+	// ManagedValue is the value of LabelManaged on an actively managed PVC.
+	ManagedValue = "true"
 
 	// AnnotationRequestUID records the owning StorageRequest UID on the PVC. A
 	// name match alone never authorizes adoption, mutation, or deletion.
@@ -59,6 +61,36 @@ const (
 	// ConditionDegraded is True for persistent, actionable problems such as an
 	// ownership conflict, immutable-field change, or unsupported resize.
 	ConditionDegraded = "Degraded"
+)
+
+// Condition reasons. Reasons are part of the API contract: tooling and alerts
+// match on them, so existing values must not be renamed.
+const (
+	// ReasonProvisioning: the managed PVC exists but is not yet bound with the
+	// requested capacity.
+	ReasonProvisioning = "Provisioning"
+	// ReasonBound: the managed PVC is bound and reports at least the requested
+	// capacity.
+	ReasonBound = "Bound"
+	// ReasonVolumeLost: the managed PVC reports phase Lost.
+	ReasonVolumeLost = "VolumeLost"
+	// ReasonPVCNameConflict: a PVC with the expected name exists but is not
+	// managed by any StorageRequest. It is never adopted.
+	ReasonPVCNameConflict = "PVCNameConflict"
+	// ReasonOwnershipMismatch: the same-name PVC belongs to another request or
+	// is not the PVC incarnation this request recorded.
+	ReasonOwnershipMismatch = "OwnershipMismatch"
+	// ReasonPVCMissing: the recorded PVC no longer exists. It is never
+	// recreated automatically.
+	ReasonPVCMissing = "PVCMissing"
+	// ReasonPVCDeleting: the managed PVC has a deletion timestamp while its
+	// request is still active.
+	ReasonPVCDeleting = "PVCDeleting"
+	// ReasonInvalidSpec: the spec failed the controller's defensive validation,
+	// so no PVC was created or changed.
+	ReasonInvalidSpec = "InvalidSpec"
+	// ReasonAsExpected is the Degraded=False reason when no problem is detected.
+	ReasonAsExpected = "AsExpected"
 )
 
 // OnDeletePolicy selects the PVC retention behavior when a StorageRequest is deleted.
