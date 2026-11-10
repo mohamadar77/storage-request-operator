@@ -1,11 +1,31 @@
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  labels:
-    app.kubernetes.io/name: storage-request-operator
-    app.kubernetes.io/managed-by: kustomize
   name: manager-role
 rules:
-- apiGroups: [""]
-  resources: ["pods"]
-  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - storage.example.io
+  resources:
+  - storagerequests
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - storage.example.io
+  resources:
+  - storagerequests/status
+  verbs:
+  - get
+  - patch
