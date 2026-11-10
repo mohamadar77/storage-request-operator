@@ -13,13 +13,13 @@ This roadmap translates the approved [design v1.1](design.md) into implementatio
 
 ## Milestone 2 — API types and validation
 
-- [ ] Define `StorageRequestSpec`, storage and lifecycle fields, and status fields in `api/v1alpha1`.
-- [ ] Add the status subresource and structural schema.
-- [ ] Add defaults for access modes, volume mode, and `onDelete`.
-- [ ] Add CEL positive-quantity validation using the Kubernetes 1.29+ quantity library.
-- [ ] Add enum, non-empty, minimum-item, and unique-item validation for the other fields.
-- [ ] Add defensive Go validation using `resource.ParseQuantity`, `Sign`, and supported enums.
-- [ ] Add a valid sample manifest and API validation tests.
+- [x] Define `StorageRequestSpec`, storage and lifecycle fields, and status fields in `api/v1alpha1`.
+- [x] Add the status subresource and structural schema.
+- [x] Add defaults for access modes, volume mode, and `onDelete`.
+- [x] Add CEL positive-quantity validation using the Kubernetes 1.29+ quantity library.
+- [x] Add enum, non-empty, minimum-item, and unique-item validation for the other fields.
+- [x] Add defensive Go validation using `resource.ParseQuantity`, `Sign`, and supported enums.
+- [x] Add a valid sample manifest and API validation tests.
 
 ## Milestone 3 — PVC creation and identity
 
