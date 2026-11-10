@@ -23,7 +23,7 @@ Contributions must not:
 
 ## Development workflow
 
-The exact tool versions and commands will be pinned during scaffold milestone 1. Once the Go scaffold exists, the expected local checks will include:
+The pinned tool versions are documented in [`docs/development.md`](docs/development.md). The standard local checks are:
 
 ```bash
 make manifests

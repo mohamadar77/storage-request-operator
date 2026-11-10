@@ -4,12 +4,12 @@ This roadmap translates the approved [design v1.1](design.md) into implementatio
 
 ## Milestone 1 — Kubebuilder scaffold
 
-- [ ] Initialize the Kubebuilder project for Go and controller-runtime.
-- [ ] Select and pin mutually compatible Go, Kubernetes libraries, Kubebuilder, and controller-runtime versions.
-- [ ] Record supported tool versions in the developer documentation and CI.
-- [ ] Configure project metadata, manager entry point, scheme, logging, health checks, readiness checks, and leader election.
-- [ ] Generate the initial CRD, RBAC, manager, and sample directories.
-- [ ] Verify `make manifests`, `make generate`, `go test ./...`, and `go vet ./...` work in a clean checkout.
+- [x] Initialize the Kubebuilder project for Go and controller-runtime.
+- [x] Select and pin mutually compatible Go, Kubernetes libraries, Kubebuilder, and controller-runtime versions.
+- [x] Record supported tool versions in the developer documentation and CI.
+- [x] Configure project metadata, manager entry point, scheme, logging, health checks, readiness checks, and leader election.
+- [x] Generate the initial CRD, RBAC, manager, and sample directories.
+- [x] Verify `make manifests`, `make generate`, `go test ./...`, and `go vet ./...` work in a clean checkout.
 
 ## Milestone 2 — API types and validation
 
