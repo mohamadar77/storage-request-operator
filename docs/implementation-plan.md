@@ -9,7 +9,7 @@ This roadmap translates the approved [design v1.1](design.md) into implementatio
 - [x] Record supported tool versions in the developer documentation and CI.
 - [x] Configure project metadata, manager entry point, scheme, logging, health checks, readiness checks, and leader election.
 - [x] Generate the initial CRD, RBAC, manager, and sample directories.
-- [x] Verify `make manifests`, `make generate`, `go test ./...`, and `go vet ./...` work in a clean checkout.
+- [x] Verify `make manifests`, `make generate`, `make test`, and `go vet ./...` work in a clean checkout (`go test ./...` additionally needs `make setup-envtest` once for the envtest binaries).
 
 ## Milestone 2 — API types and validation
 
