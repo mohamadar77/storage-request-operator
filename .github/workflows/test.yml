@@ -23,7 +23,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Running Tests
+      # Regenerate everything and fail if the committed copies are stale. This
+      # must run before the tests, which regenerate as a side effect.
+      - name: Verify generated files and go.mod are up to date
         run: |
+          make manifests generate
           go mod tidy
-          make test
+          git diff --exit-code
+
+      - name: Running Tests
+        run: make test
