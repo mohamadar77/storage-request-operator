@@ -86,6 +86,27 @@ func TestValidateStorageRequest(t *testing.T) {
 			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeInvalid},
 		},
 		{
+			name: "astronomically large size is invalid without slow comparison",
+			sr: newRequest(func(sr *StorageRequest) {
+				sr.Spec.Storage.Size = *resource.NewScaledQuantity(1, resource.Scale(2147483647))
+			}),
+			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeInvalid},
+		},
+		{
+			name: "vanishingly small size is invalid",
+			sr: newRequest(func(sr *StorageRequest) {
+				sr.Spec.Storage.Size = *resource.NewScaledQuantity(1, resource.Scale(-2147483647))
+			}),
+			wantErrs: map[string]field.ErrorType{"spec.storage.size": field.ErrorTypeInvalid},
+		},
+		{
+			name: "largest practical size is valid",
+			sr: newRequest(func(sr *StorageRequest) {
+				sr.Spec.Storage.Size = resource.MustParse("7Ei")
+			}),
+			wantErrs: map[string]field.ErrorType{},
+		},
+		{
 			name: "empty storageClassName is invalid",
 			sr: newRequest(func(sr *StorageRequest) {
 				sr.Spec.Storage.StorageClassName = ptr("")

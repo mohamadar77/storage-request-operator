@@ -211,10 +211,11 @@ A request that asks for a smaller size than an already provisioned PVC may remai
 
 Enforce validation in the CRD schema and retain defensive validation in Go before making any PVC change:
 
-- `spec.storage.size` is required and must be a valid, positive Kubernetes quantity. On the Kubernetes 1.29+ baseline, use the CEL quantity library in the CRD (for example, `isQuantity(self) && quantity(self).sign() > 0`) and repeat the check with `resource.ParseQuantity` / `resource.Quantity.Sign` in Go. Use `resource.Quantity.Cmp` for comparisons; never use strings or floating-point arithmetic.
+- `spec.storage.size` is required and must be a valid, positive Kubernetes quantity. On the Kubernetes 1.29+ baseline, use the CEL quantity library in the CRD and repeat the check with `resource.Quantity.Sign` in Go. Use `resource.Quantity.Cmp` for comparisons of validated sizes; never use strings or floating-point arithmetic for comparisons. The implemented rule is `type(self) == int ? self > 0 : (self.size() <= 64 && !self.matches('[eE][+-]?[0-9]{3,}') && isQuantity(self) && quantity(self).compareTo(quantity('0')) > 0)`. Three points are deliberate deviations from the earlier example `quantity(self).sign() > 0`: (1) `sign` is registered as a global function in the API server's CEL library, so the method form fails to compile at CRD creation, and `compareTo(quantity('0'))` is used instead; (2) the length and exponent guards come first because quantity parsing and comparison are superlinear in the decimal exponent, so an unguarded rule lets a value such as `1e2147483647` exhaust API server CPU and memory; (3) the field is int-or-string, so integers are handled in their own branch. The Go validation mirrors the bound with a constant-time magnitude check before any `Cmp`.
 - `storageClassName`, when present, must be non-empty. Omission means “use the cluster's defaulting behavior,” not “request no StorageClass.”
-- `accessModes` must contain at least one supported Kubernetes access mode and must not contain duplicates (`minItems: 1`, enum values, and `uniqueItems: true`).
+- `accessModes` must contain at least one supported Kubernetes access mode and must not contain duplicates (`minItems: 1`, enum values, and `x-kubernetes-list-type: set`; CRD schemas forbid `uniqueItems: true`).
 - `volumeMode` is limited to `Filesystem` or `Block`; default it to `Filesystem`.
+- `status.pvcUID` is immutable once set (section 4.4). A root-level CEL transition rule rejects changing it, clearing it, or removing the whole status.
 - `onDelete` is limited to `Retain` or `Delete`; default it to `Retain`.
 - Reject unknown fields through the CRD's structural schema. Do not add arbitrary PVC templates or pass-through fields in v1.
 

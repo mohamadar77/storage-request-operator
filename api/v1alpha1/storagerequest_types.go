@@ -80,8 +80,14 @@ type StorageSpec struct {
 	// (for example, 20Gi). The size may be increased. A decrease is rejected
 	// except for the narrow terminal failed-resize recovery rule described in
 	// the design, which never shrinks the actual volume.
+	//
+	// Validation note: the length and exponent guards must stay first in the CEL
+	// rule. Quantity parsing and comparison are superlinear in the decimal
+	// exponent, so an unguarded rule lets a short string such as 1e2147483647
+	// exhaust API server CPU and memory. Integer values are accepted like core
+	// PVC quantities.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:XValidation:rule="isQuantity(self) && quantity(self).compareTo(quantity('0')) > 0",message="size must be a positive Kubernetes quantity"
+	// +kubebuilder:validation:XValidation:rule="type(self) == int ? self > 0 : (self.size() <= 64 && !self.matches('[eE][+-]?[0-9]{3,}') && isQuantity(self) && quantity(self).compareTo(quantity('0')) > 0)",message="size must be a positive Kubernetes quantity"
 	Size resource.Quantity `json:"size"`
 
 	// storageClassName optionally selects the StorageClass. When omitted, the
@@ -149,6 +155,7 @@ type StorageRequestStatus struct {
 	// pvcUID is the UID of the exact PVC incarnation verified as belonging to
 	// this request. Once set it is retained for the request lifetime and is used
 	// to detect same-name replacement; it is never used to adopt a PVC by name.
+	// The CRD enforces this: once set, the value cannot be changed or cleared.
 	// +optional
 	PVCUID types.UID `json:"pvcUID,omitempty"`
 
@@ -178,7 +185,8 @@ type StorageRequestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced,shortName=sr
+// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.pvcUID) || (has(self.status) && has(self.status.pvcUID) && self.status.pvcUID == oldSelf.status.pvcUID)",message="status.pvcUID is immutable once set"
 // +kubebuilder:printcolumn:name="Requested",type=string,JSONPath=`.spec.storage.size`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.pvcPhase`
 // +kubebuilder:printcolumn:name="Capacity",type=string,JSONPath=`.status.capacity`

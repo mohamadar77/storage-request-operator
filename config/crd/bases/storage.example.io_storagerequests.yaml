@@ -11,8 +11,6 @@ spec:
     kind: StorageRequest
     listKind: StorageRequestList
     plural: storagerequests
-    shortNames:
-    - sr
     singular: storagerequest
   scope: Namespaced
   versions:
@@ -107,12 +105,19 @@ spec:
                       (for example, 20Gi). The size may be increased. A decrease is rejected
                       except for the narrow terminal failed-resize recovery rule described in
                       the design, which never shrinks the actual volume.
+
+                      Validation note: the length and exponent guards must stay first in the CEL
+                      rule. Quantity parsing and comparison are superlinear in the decimal
+                      exponent, so an unguarded rule lets a short string such as 1e2147483647
+                      exhaust API server CPU and memory. Integer values are accepted like core
+                      PVC quantities.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                     x-kubernetes-validations:
                     - message: size must be a positive Kubernetes quantity
-                      rule: isQuantity(self) && quantity(self).compareTo(quantity('0'))
-                        > 0
+                      rule: 'type(self) == int ? self > 0 : (self.size() <= 64 &&
+                        !self.matches(''[eE][+-]?[0-9]{3,}'') && isQuantity(self)
+                        && quantity(self).compareTo(quantity(''0'')) > 0)'
                   storageClassName:
                     description: |-
                       storageClassName optionally selects the StorageClass. When omitted, the
@@ -233,6 +238,7 @@ spec:
                   pvcUID is the UID of the exact PVC incarnation verified as belonging to
                   this request. Once set it is retained for the request lifetime and is used
                   to detect same-name replacement; it is never used to adopt a PVC by name.
+                  The CRD enforces this: once set, the value cannot be changed or cleared.
                 type: string
               volumeName:
                 description: volumeName is the bound PersistentVolume name, when assigned.
@@ -241,6 +247,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: status.pvcUID is immutable once set
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.pvcUID) || (has(self.status)
+            && has(self.status.pvcUID) && self.status.pvcUID == oldSelf.status.pvcUID)'
     served: true
     storage: true
     subresources:

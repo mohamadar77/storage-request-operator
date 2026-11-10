@@ -41,6 +41,17 @@ var supportedOnDelete = map[OnDeletePolicy]struct{}{
 	OnDeleteDelete: {},
 }
 
+// Magnitude bounds for spec.storage.size. Quantity.Cmp, rounding, and String
+// are superlinear in the decimal exponent, so a quantity such as 1e2147483647
+// must be rejected before any of them is called. The bounds are deliberately
+// wider than anything the CRD rule admits (at most 64 characters with an
+// exponent of at most two digits), so they never reject an admitted object.
+// The check uses AsApproximateFloat64, which is constant-time.
+const (
+	minSizeMagnitude = 1e-165
+	maxSizeMagnitude = 1e165
+)
+
 // ValidateStorageRequest runs defensive validation on a StorageRequest. The CRD
 // schema and CEL rules are the primary guard; this repeats the checks in Go so
 // the controller never creates or resizes a PVC from an invalid spec, including
@@ -61,13 +72,19 @@ func validateStorageRequestSpec(spec *StorageRequestSpec, fldPath *field.Path) f
 func validateStorageSpec(storage *StorageSpec, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 
-	// size must be present and strictly positive. The quantity is already parsed
-	// by the API machinery; compare with Sign rather than strings or floats.
+	// size must be present, strictly positive, and of bounded magnitude. The
+	// quantity is already parsed by the API machinery; Sign is constant-time.
+	// Callers must not call Cmp on a size that has not passed this check.
 	sizePath := fldPath.Child("size")
 	if storage.Size.IsZero() {
 		allErrs = append(allErrs, field.Required(sizePath, "a positive storage size is required"))
 	} else if storage.Size.Sign() <= 0 {
-		allErrs = append(allErrs, field.Invalid(sizePath, storage.Size.String(), "storage size must be greater than zero"))
+		// Report the sign rather than Size.String(): formatting an extreme
+		// quantity is as expensive as comparing it.
+		allErrs = append(allErrs, field.Invalid(sizePath, "<non-positive quantity>", "storage size must be greater than zero"))
+	} else if f := storage.Size.AsApproximateFloat64(); f < minSizeMagnitude || f > maxSizeMagnitude {
+		allErrs = append(allErrs, field.Invalid(sizePath, "<out-of-range quantity>",
+			"storage size is outside the supported range"))
 	}
 
 	// storageClassName, when supplied, must be non-empty. Omission (nil) means
