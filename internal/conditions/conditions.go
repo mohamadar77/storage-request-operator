@@ -40,10 +40,28 @@ type Health struct {
 
 	DegradedReason  string
 	DegradedMessage string
+
+	// Resize is what the PVC reports about expansion work.
+	Resize storage.ResizeState
 }
 
 // Degraded reports whether the assessment found a persistent problem.
 func (h Health) Degraded() bool { return h.DegradedReason != "" }
+
+// WithProblem reports a persistent problem with the request's spec on top of
+// the claim assessment: Degraded takes the given reason, replacing any
+// Degraded reason derived from the claim. Ready keeps the claim's state, so it
+// can stay True when the claim still satisfies the request (design section
+// 4.4); but a Ready=False that only waited for a resize takes the problem's
+// reason too, because no resize is going to happen.
+func (h Health) WithProblem(reason, message string) Health {
+	h.DegradedReason, h.DegradedMessage = reason, message
+	if h.ReadyStatus == metav1.ConditionFalse && h.ReadyReason == storagev1alpha1.ReasonResizing &&
+		h.Resize != storage.ResizeInProgress {
+		h.ReadyReason, h.ReadyMessage = reason, message
+	}
+	return h
+}
 
 // AssessClaim derives Ready and Degraded from the verified PVC (design
 // sections 4.4 and 8). Ready is True only when the claim is Bound, reports at
@@ -116,6 +134,7 @@ func AssessClaim(sr *storagev1alpha1.StorageRequest, pvc *corev1.PersistentVolum
 			h.ReadyMessage = message
 		}
 	}
+	h.Resize = resize
 	return h
 }
 

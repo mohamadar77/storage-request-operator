@@ -72,8 +72,8 @@ The API details and status semantics are documented in [`docs/api.md`](docs/api.
 | 1 | Kubebuilder scaffold, manager, CRD generation | Complete |
 | 2 | API types, defaults, validation, sample manifest | Complete |
 | 3 | PVC builder, finalizer-before-create, identity and collision handling | Complete |
-| 4 | PVC watches, status conditions, events | In review |
-| 5 | Immutable-field checks, expansion and failed-resize recovery | Not started |
+| 4 | PVC watches, status conditions, events | Complete |
+| 5 | Immutable-field checks, expansion and failed-resize recovery | In progress |
 | 6 | Retain/Delete finalization | Not started |
 | 7 | RBAC, leader election, probes, metrics, hardening | Not started |
 | 8 | CSI-backed E2E tests, user guide, operational troubleshooting | Not started |

@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	storagev1alpha1 "github.com/mohamadar77/storage-request-operator/api/v1alpha1"
+	"github.com/mohamadar77/storage-request-operator/internal/storage"
 )
 
 // requestedSize is the size most fixtures request.
@@ -178,5 +179,52 @@ func TestProjectAndClearClaim(t *testing.T) {
 	ClearClaim(status)
 	if status.PVCPhase != "" || status.VolumeName != "" || status.Capacity != nil {
 		t.Fatalf("ClearClaim left %+v", status)
+	}
+}
+
+func TestWithProblem(t *testing.T) {
+	const reason, message = "ShrinkNotSupported", "the volume is never shrunk"
+	tests := []struct {
+		name        string
+		in          Health
+		wantReady   string
+		wantMessage string
+	}{
+		{
+			name: "Ready stays True; Degraded takes the problem",
+			in: Health{ReadyStatus: metav1.ConditionTrue, ReadyReason: storagev1alpha1.ReasonBound,
+				ReadyMessage: "bound", DegradedReason: storagev1alpha1.ReasonResizeFailed},
+			wantReady: storagev1alpha1.ReasonBound, wantMessage: "bound",
+		},
+		{
+			name: "a Ready=False that only waited for a resize takes the problem",
+			in: Health{ReadyStatus: metav1.ConditionFalse, ReadyReason: storagev1alpha1.ReasonResizing,
+				ReadyMessage: "below", Resize: storage.ResizeNone},
+			wantReady: reason, wantMessage: message,
+		},
+		{
+			name: "a resize really in progress keeps its Ready reason",
+			in: Health{ReadyStatus: metav1.ConditionFalse, ReadyReason: storagev1alpha1.ReasonResizing,
+				ReadyMessage: "resizing", Resize: storage.ResizeInProgress},
+			wantReady: storagev1alpha1.ReasonResizing, wantMessage: "resizing",
+		},
+		{
+			name: "a claim-state Ready reason is kept",
+			in: Health{ReadyStatus: metav1.ConditionFalse, ReadyReason: storagev1alpha1.ReasonProvisioning,
+				ReadyMessage: "pending"},
+			wantReady: storagev1alpha1.ReasonProvisioning, wantMessage: "pending",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.in.WithProblem(reason, message)
+			if got.DegradedReason != reason || got.DegradedMessage != message {
+				t.Errorf("Degraded = %s/%q, want %s/%q", got.DegradedReason, got.DegradedMessage, reason, message)
+			}
+			if got.ReadyStatus != tt.in.ReadyStatus || got.ReadyReason != tt.wantReady || got.ReadyMessage != tt.wantMessage {
+				t.Errorf("Ready = %s/%s/%q, want %s/%s/%q", got.ReadyStatus, got.ReadyReason, got.ReadyMessage,
+					tt.in.ReadyStatus, tt.wantReady, tt.wantMessage)
+			}
+		})
 	}
 }

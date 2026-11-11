@@ -17,6 +17,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Milestone 1-2 review fixes: guarded size CEL rule (rejects pathological exponents before any quantity call, accepts integers), `status.pvcUID` immutable once set, CI check for stale generated files.
 - Milestone 3: `StorageRequest` controller that persists its finalizer before creating a PVC, builds a deterministic PVC with identity labels and the request UID annotation (no owner reference), records the PVC UID in status immediately, and verifies identity on every reconcile. Same-name PVCs are never adopted (`PVCNameConflict`, `OwnershipMismatch`), a recorded PVC that disappears is never recreated (`PVCMissing`), and a terminating PVC is reported (`PVCDeleting`). Generated RBAC now grants only StorageRequest read/patch, status patch, and PVC read/create.
 - Milestone 4: watch on managed PVCs (label or request-UID annotation, old or new object) mapped to the same-name request; `status.pvcPhase`, `status.volumeName`, and `status.capacity` projected from a verified claim and cleared for a missing or foreign one; read-only resize-state observation (`Resizing`, `ResizeFailed`); events.k8s.io/v1 Events once per state transition (`PVCRequested`, `PVCBound`, `PVCResizing`, and a Warning per problem reason). RBAC adds Event `create`/`patch`.
+- Milestone 5: safe spec updates. Immutable StorageClass/access-mode/volume-mode changes are reported (`ImmutableFieldChange`) and never replace the claim. Capacity is grow-only: a larger size is deferred while unbound and, once bound, patched onto `PVC.spec.resources.requests.storage` only when the resolved StorageClass allows expansion (`ExpansionNotSupported`, `StorageClassNotFound` otherwise). A decrease is rejected (`ShrinkNotSupported`) except the design 6.4 recovery from a terminal resize failure to a target above the actual capacity (`ResizeRecoveryRejected` otherwise). RBAC adds PVC `patch` and StorageClass `get`.
 
 ### Changed
 
@@ -24,7 +25,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Not yet implemented
 
-- Resize (milestone 5). Until then an increase of `spec.storage.size` is not applied to the PVC; `Ready` stays `False` because the reported capacity is below the request.
 - Finalization (milestone 6). Until then a deleted `StorageRequest` keeps its finalizer and stays in `Terminating`, and so does its namespace.
 - Remaining operational hardening (milestone 7).
 - CSI-backed end-to-end tests (milestone 8).

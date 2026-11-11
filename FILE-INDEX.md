@@ -12,7 +12,8 @@ A map of the repository. The approved design at `docs/design.md` is the canonica
 - `internal/controller/storagerequest_controller.go` — reconciliation logic
 - `internal/storage/pvc_builder.go` — deterministic desired-PVC builder
 - `internal/storage/identity.go` — request-UID and PVC-UID identity check
-- `internal/storage/resize.go` — read-only observation of PVC resize state
+- `internal/storage/resize.go` — PVC resize-state observation and the grow-only resize plan
+- `internal/storage/pvc_validation.go` — immutable-field comparison of a request against its claim
 - `internal/conditions/conditions.go` — Ready/Degraded assessment and status projection of a verified PVC
 
 ## Tests
