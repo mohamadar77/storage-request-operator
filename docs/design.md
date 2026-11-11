@@ -5,7 +5,7 @@
 **API group/version:** `storage.example.io/v1alpha1` (development placeholder)  
 **Implementation language/framework:** Go, Kubebuilder, controller-runtime  
 **Target platforms:** Kubernetes 1.29+; OpenShift releases whose bundled Kubernetes API is 1.29+ and are included in the project test matrix  
-**Last updated:** 2026-11-09
+**Last updated:** 2026-11-11 (editorial: reason list, project layout, and RBAC verbs aligned with the implementation; no contract change)
 
 > **API-domain release gate:** `storage.example.io` is a placeholder. Select a domain controlled by the project and replace the group before the first shared-cluster installation or public CRD release. Changing the API group after consumers create resources is a breaking migration, so do not publish the placeholder group as a stable API.
 
@@ -239,6 +239,8 @@ Use stable, machine-readable condition reasons. Suggested reasons include:
 - `PVCMissing`
 - `PVCDeleting`
 - `ResizeFailed`
+- `InvalidSpec` (the spec failed the controller's defensive Go validation, for example an object admitted before a schema change; no PVC is created or changed)
+- `AsExpected` (the `Degraded=False` reason when no problem is detected)
 
 Do not use status as a second source of truth. The PVC remains authoritative for claim phase and capacity; the custom resource status is a user-friendly summary.
 
@@ -457,12 +459,9 @@ storage-request-operator/
 ├── internal/
 │   ├── controller/
 │   │   └── storagerequest_controller.go
-│   ├── storage/
-│   │   ├── pvc_builder.go
-│   │   ├── pvc_validation.go
-│   │   └── resize.go
-│   └── conditions/
-│       └── conditions.go
+│   └── storage/
+│       ├── pvc_builder.go
+│       └── identity.go
 ├── config/
 │   ├── crd/
 │   ├── rbac/
@@ -476,7 +475,7 @@ storage-request-operator/
 └── go.mod
 ```
 
-Keep PVC construction, immutability checks, resize checks, and condition updates in small functions. Avoid putting all logic into a large `Reconcile` method.
+Keep PVC construction, immutability checks, resize checks, and condition updates in small functions. Avoid putting all logic into a large `Reconcile` method. The layout above shows the files that exist today; pure, API-server-free logic added by later milestones (immutable-field checks, resize decisions, status projection) belongs in `internal/storage` next to them, and defensive spec validation lives with the API types in `api/v1alpha1/validation.go`.
 
 ### 9.2 Controller-runtime responsibilities
 
@@ -521,11 +520,13 @@ The controller needs the minimum permissions required for its responsibilities:
 
 | Resource | Verbs | Reason |
 |---|---|---|
-| `storagerequests` | `get`, `list`, `watch`, `update`, `patch` | Read requests and maintain finalizers |
-| `storagerequests/status` | `get`, `update`, `patch` | Publish status |
+| `storagerequests` | `get`, `list`, `watch`, `patch` | Read requests and maintain finalizers |
+| `storagerequests/status` | `get`, `patch` | Publish status |
 | `persistentvolumeclaims` | `get`, `list`, `watch`, `create`, `patch`, `delete` | Create, observe, resize, mark, and delete only the corresponding PVC |
 | `storageclasses` | `get` | Check `allowVolumeExpansion` before a bound-claim resize |
 | `events` | `create`, `patch` | Publish user-visible Kubernetes Events |
+
+The controller writes requests and their status only through optimistic-lock merge patches, so `update` is not granted on either resource. Verbs are added only in the milestone that first uses them (for example, PVC `patch`/`delete`, StorageClass `get`, and Event writes); the table is the v1 ceiling, not the set granted at every milestone.
 
 The operator does **not** need permissions to create/update/delete PVs, Pods, Nodes, Secrets, `VolumeAttachment` objects, or CSI resources for this design.
 
