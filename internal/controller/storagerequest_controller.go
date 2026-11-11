@@ -369,6 +369,19 @@ func (r *StorageRequestReconciler) reconcileClaimSpec(
 		desired.Spec.Resources.Requests[corev1.ResourceStorage] = plan.Target
 		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
 		if err := r.Patch(ctx, desired, patch); err != nil {
+			if apierrors.IsInvalid(err) || apierrors.IsForbidden(err) {
+				// The API server refused the request change itself, not a
+				// transient failure: for example the claim is bound to a
+				// statically provisioned volume ("only dynamically provisioned
+				// pvc can be resized"), or a recovery decrease on a cluster
+				// without the RecoverVolumeExpansionFailure behavior. Retrying
+				// the identical patch would loop in backoff forever and leave
+				// the user no condition to read, so report it instead.
+				message := fmt.Sprintf("Kubernetes rejected resizing PersistentVolumeClaim %s to %s: %s",
+					pvc.Name, plan.Target.String(), storage.Truncate(err.Error(), 2048))
+				log.Info("Kubernetes rejected the PersistentVolumeClaim resize; claim left unchanged", "target", plan.Target.String())
+				return pvc, health.WithProblem(storagev1alpha1.ReasonResizeRejected, message), nil
+			}
 			return pvc, health, fmt.Errorf("patching PersistentVolumeClaim storage request: %w", err)
 		}
 		log.Info("Patched PersistentVolumeClaim storage request",

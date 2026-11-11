@@ -340,7 +340,7 @@ For a bound PVC, compare quantities with `resource.Quantity.Cmp` and apply these
 4. For every other decrease (including an unbound claim, a resize still in progress, missing actual capacity, a target equal to/below actual capacity, or no explicit terminal failure), do not patch the PVC. Set `Degraded=True`, reason `ShrinkNotSupported` or `ResizeRecoveryRejected`. Never reduce the request below observed actual capacity.
 5. Do not patch PV capacity or PVC status. The Kubernetes storage control plane and CSI driver own those fields.
 
-For an unbound PVC, a larger requested size may be applied before provisioning because no existing volume is being expanded. A decrease remains rejected in v1; the recovery exception applies only to a bound PVC with a terminally failed expansion and a known actual capacity.
+For an unbound PVC, a larger requested size is deferred rather than applied immediately: Kubernetes forbids changing `spec.resources.requests` on an unbound PVC (it reports that the spec is immutable except for `resources.requests` and `volumeAttributesClassName` on a *bound* claim), and the operator must never delete and recreate the claim to force the larger size. The operator therefore records the intent, leaves the claim untouched, and applies the increase on the first reconcile after the claim binds — at which point the bound-claim rules above apply, including the `allowVolumeExpansion` check. A decrease remains rejected in v1; the recovery exception applies only to a bound PVC with a terminally failed expansion and a known actual capacity.
 
 After submitting an expansion, report `Ready=False`, reason `Resizing`, until the PVC remains `Bound`, `status.capacity.storage` is at least the requested size, and no resize operation remains pending/in progress. Inspect PVC conditions and `status.allocatedResourceStatuses["storage"]` where served. A terminal controller/node resize failure sets `Degraded=True`, reason `ResizeFailed`, with the PVC's actionable details surfaced in the message/event. Do not continuously re-patch the same failed target; wait for a spec change or an explicit recovery target.
 
@@ -631,7 +631,7 @@ The implementation is not complete until all of the following are true:
 - [ ] The controller never adopts a PVC without a matching request UID and, once recorded, a matching PVC UID.
 - [ ] A PVC missing after its UID is recorded is not recreated automatically.
 - [ ] Pending and Bound states are reflected accurately in status.
-- [ ] A bound PVC can be expanded only when its StorageClass supports expansion; while the claim is still unbound, a larger requested size may be applied before provisioning.
+- [ ] A bound PVC can be expanded only when its StorageClass supports expansion; a larger requested size on a still-unbound claim is deferred (Kubernetes forbids the request change before bind) and applied on the first reconcile after the claim binds.
 - [ ] Actual volume capacity is never reduced; a lower failed-resize target is accepted only when it remains strictly above actual capacity and Kubernetes reports a terminal resize failure.
 - [ ] Ready remains false while Kubernetes reports resize work pending/in progress or actual capacity is below the desired target.
 - [ ] StorageClass, access mode, and volume mode changes do not trigger PVC replacement.
