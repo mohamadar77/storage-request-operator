@@ -19,6 +19,7 @@ package storage
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -88,11 +89,34 @@ func TestObserveResize(t *testing.T) {
 			want: ResizeFailed, wantEvidence: "ControllerResizeFailed",
 		},
 		{
-			name: "terminal status wins over a Resizing condition, and the condition message is surfaced",
+			name: "terminal status wins over a retried-error condition, and the condition message is surfaced",
 			pvc: withCondition(
 				withAllocated(boundClaim(), corev1.PersistentVolumeClaimControllerResizeInfeasible),
 				corev1.PersistentVolumeClaimControllerResizeError, corev1.ConditionTrue, "quota exceeded"),
 			want: ResizeFailed, wantEvidence: "ControllerResizeError: quota exceeded",
+		},
+		{
+			name: "legacy alpha node failure name is terminal",
+			pvc:  withAllocated(boundClaim(), "NodeResizeFailed"),
+			want: ResizeFailed, wantEvidence: "NodeResizeFailed",
+		},
+		{
+			name: "an unknown allocated status is ignored",
+			pvc:  withAllocated(boundClaim(), "SomeFutureStatus"),
+			want: ResizeNone,
+		},
+		{
+			name: "terminal status wins over a Resizing condition",
+			pvc: withCondition(
+				withAllocated(boundClaim(), corev1.PersistentVolumeClaimNodeResizeInfeasible),
+				corev1.PersistentVolumeClaimResizing, corev1.ConditionTrue, ""),
+			want: ResizeFailed, wantEvidence: "NodeResizeInfeasible; Resizing",
+		},
+		{
+			name: "a trailing period in a condition message is dropped",
+			pvc: withCondition(boundClaim(),
+				corev1.PersistentVolumeClaimControllerResizeError, corev1.ConditionTrue, "disk busy."),
+			want: ResizeInProgress, wantEvidence: "ControllerResizeError: disk busy",
 		},
 		{
 			name: "Resizing condition without allocated status",
@@ -134,6 +158,52 @@ func TestObserveResize(t *testing.T) {
 			}
 			if tt.want == ResizeNone && evidence != "" {
 				t.Errorf("evidence = %q, want empty", evidence)
+			}
+		})
+	}
+}
+
+func TestObserveResizeBoundsEvidence(t *testing.T) {
+	pvc := boundClaim()
+	long := strings.Repeat("x", 10000)
+	for _, ct := range []corev1.PersistentVolumeClaimConditionType{
+		corev1.PersistentVolumeClaimControllerResizeError, corev1.PersistentVolumeClaimNodeResizeError,
+		corev1.PersistentVolumeClaimResizing, corev1.PersistentVolumeClaimFileSystemResizePending,
+	} {
+		pvc = withCondition(pvc, ct, corev1.ConditionTrue, long)
+	}
+	for _, allocated := range []corev1.ClaimResourceStatus{"", corev1.PersistentVolumeClaimControllerResizeInfeasible} {
+		if allocated != "" {
+			pvc = withAllocated(pvc, allocated)
+		}
+		_, evidence := ObserveResize(pvc)
+		if len(evidence) > maxResizeEvidence {
+			t.Errorf("allocated %q: evidence is %d bytes, want at most %d", allocated, len(evidence), maxResizeEvidence)
+		}
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    string
+		limit int
+		want  string
+	}{
+		{name: "short string unchanged", in: "abc", limit: 3, want: "abc"},
+		{name: "ascii cut with ellipsis", in: "abcdefgh", limit: 6, want: "abc…"},
+		// "é" is two bytes; a cut inside it must back off to the rune start.
+		{name: "cut on a character boundary", in: "aéééé", limit: 6, want: "aé…"},
+		{name: "never splits a UTF-8 character", in: "aéééé", limit: 5, want: "a…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Truncate(tt.in, tt.limit)
+			if got != tt.want {
+				t.Fatalf("Truncate(%q, %d) = %q, want %q", tt.in, tt.limit, got, tt.want)
+			}
+			if len(got) > tt.limit || !utf8.ValidString(got) {
+				t.Fatalf("Truncate(%q, %d) = %q: %d bytes, valid UTF-8 %v", tt.in, tt.limit, got, len(got), utf8.ValidString(got))
 			}
 		})
 	}

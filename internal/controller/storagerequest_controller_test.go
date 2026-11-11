@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -171,6 +172,35 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 	isPVC := func(obj client.Object) bool {
 		_, ok := obj.(*corev1.PersistentVolumeClaim)
 		return ok
+	}
+	// drainEvents returns and clears the Events recorded so far, each as
+	// "<type> <reason> <note>".
+	drainEvents := func() []string {
+		var got []string
+		for {
+			select {
+			case e := <-recorder.Events:
+				got = append(got, e)
+			default:
+				return got
+			}
+		}
+	}
+	// invalidSpec wraps a reader so every StorageRequest it returns carries an
+	// empty StorageClass, a spec the Go validator rejects and a looser CRD
+	// schema could have admitted.
+	invalidSpec := func(inner client.WithWatch) client.WithWatch {
+		return interceptor.NewClient(inner, interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, k, obj, opts...); err != nil {
+					return err
+				}
+				if sr, ok := obj.(*storagev1alpha1.StorageRequest); ok {
+					sr.Spec.Storage.StorageClassName = new("")
+				}
+				return nil
+			},
+		})
 	}
 
 	BeforeEach(func() {
@@ -591,16 +621,38 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			original := getPVC()
 			removePVC()
 			replacement := createForeignPVC(string(sr.UID)) // annotation copied
+			drainEvents()
 
 			_, err := reconcileWith(cachedAs(snapshot))
 
 			Expect(apierrors.IsConflict(err)).To(BeTrue(), "the stale status write must be rejected as a conflict, got: %v", err)
+			Expect(drainEvents()).To(BeEmpty(), "a write rejected as a conflict emits no Event")
 			Expect(getRequest().Status.PVCUID).To(Equal(original.UID), "the replacement must never be recorded")
 			Expect(getPVC().ResourceVersion).To(Equal(replacement.ResourceVersion))
 
 			// With a current cache the replacement is reported, not adopted.
 			reconcileOnce()
 			expectProblem(storagev1alpha1.ReasonOwnershipMismatch)
+		})
+
+		It("validates the live request before assessing a recorded PVC the cache does not show", func() {
+			createRequest()
+			provision()
+			pvc := getPVC()
+			pvc.Status.Phase = corev1.ClaimBound
+			pvc.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")}
+			Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+			drainEvents()
+			r := &StorageRequestReconciler{
+				Client: withoutPVCs(k8sClient), APIReader: invalidSpec(k8sClient),
+				Scheme: scheme.Scheme, Recorder: recorder,
+			}
+
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+
+			Expect(err).NotTo(HaveOccurred())
+			expectProblem(storagev1alpha1.ReasonInvalidSpec)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning InvalidSpec ")), "no PVCBound for an invalid spec")
 		})
 
 		It("keeps another controller's finalizer the cache has not seen yet", func() {
@@ -794,18 +846,6 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)}
 			})
 		}
-		drainEvents := func() []string {
-			var got []string
-			for {
-				select {
-				case e := <-recorder.Events:
-					got = append(got, e)
-				default:
-					return got
-				}
-			}
-		}
-
 		It("projects the bound claim's phase, volume, and actual capacity", func() {
 			createRequest()
 			provision()
@@ -928,6 +968,122 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			reconcileOnce()
 
 			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning PVCNameConflict ")))
+		})
+
+		It("emits PVCBound again only after Ready really went false", func() {
+			createRequest()
+			provision()
+			bind("20Gi")
+			reconcileOnce()
+			Expect(drainEvents()).To(ContainElement(HavePrefix("Normal PVCBound ")))
+
+			By("a terminal resize failure while capacity still satisfies the request")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = map[corev1.ResourceName]corev1.ClaimResourceStatus{
+					corev1.ResourceStorage: corev1.PersistentVolumeClaimControllerResizeInfeasible,
+				}
+			})
+			reconcileOnce()
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonResizeFailed)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning ResizeFailed ")))
+
+			By("the failure clearing: Ready never changed, so no PVCBound")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = nil
+			})
+			reconcileOnce()
+			expectCondition(getRequest(), storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+			Expect(drainEvents()).To(BeEmpty())
+		})
+
+		It("emits PVCBound when Ready becomes true while a resize failure is still reported", func() {
+			createRequest()
+			provision()
+			bind("10Gi")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = map[corev1.ResourceName]corev1.ClaimResourceStatus{
+					corev1.ResourceStorage: corev1.PersistentVolumeClaimControllerResizeInfeasible,
+				}
+			})
+			reconcileOnce()
+			expectProblem(storagev1alpha1.ReasonResizeFailed)
+			drainEvents()
+
+			sr := getRequest()
+			sr.Spec.Storage.Size = resource.MustParse("10Gi")
+			Expect(k8sClient.Update(ctx, sr)).To(Succeed())
+			reconcileOnce()
+
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonResizeFailed)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Normal PVCBound ")))
+		})
+
+		It("truncates a long resize message so the Warning Event is never dropped", func() {
+			createRequest()
+			provision()
+			bind("10Gi")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = map[corev1.ResourceName]corev1.ClaimResourceStatus{
+					corev1.ResourceStorage: corev1.PersistentVolumeClaimControllerResizeInfeasible,
+				}
+				// Each message is capped on its own; four of them still exceed
+				// the 1024-byte Event note limit together.
+				long := strings.Repeat("driver error detail ", 500) // 10000 bytes
+				for _, t := range []corev1.PersistentVolumeClaimConditionType{
+					corev1.PersistentVolumeClaimControllerResizeError, corev1.PersistentVolumeClaimNodeResizeError,
+					corev1.PersistentVolumeClaimResizing, corev1.PersistentVolumeClaimFileSystemResizePending,
+				} {
+					status.Conditions = append(status.Conditions, corev1.PersistentVolumeClaimCondition{
+						Type: t, Status: corev1.ConditionTrue, Message: long,
+					})
+				}
+			})
+			drainEvents()
+
+			reconcileOnce()
+
+			got := expectProblem(storagev1alpha1.ReasonResizeFailed)
+			degraded := meta.FindStatusCondition(got.Status.Conditions, storagev1alpha1.ConditionDegraded)
+			Expect(len(degraded.Message)).To(BeNumerically("<", 4096))
+			Expect(degraded.Message).To(ContainSubstring("driver error detail"))
+			events := drainEvents()
+			Expect(events).To(ConsistOf(HavePrefix("Warning ResizeFailed ")))
+			note := strings.TrimPrefix(events[0], "Warning ResizeFailed ")
+			Expect(len(note)).To(BeNumerically("<=", maxEventNote))
+			Expect(note).To(HaveSuffix("…"))
+		})
+
+		It("names the last observed PersistentVolume when the PVC goes missing", func() {
+			createRequest()
+			provision()
+			bind("20Gi")
+			reconcileOnce()
+			removePVC()
+
+			reconcileOnce()
+
+			degraded := meta.FindStatusCondition(getRequest().Status.Conditions, storagev1alpha1.ConditionDegraded)
+			Expect(degraded.Message).To(ContainSubstring("PersistentVolume pv-" + namespace))
+		})
+
+		It("clears the projected claim while the spec is invalid", func() {
+			createRequest()
+			provision()
+			bind("20Gi")
+			reconcileOnce()
+			Expect(getRequest().Status.PVCPhase).To(Equal(corev1.ClaimBound))
+
+			_, err := reconcileWith(invalidSpec(k8sClient))
+
+			Expect(err).NotTo(HaveOccurred())
+			got := expectProblem(storagev1alpha1.ReasonInvalidSpec)
+			Expect(got.Status.PVCPhase).To(BeEmpty())
+			Expect(got.Status.VolumeName).To(BeEmpty())
+			Expect(got.Status.Capacity).To(BeNil())
 		})
 
 		It("emits no Event when the status write is rejected", func() {

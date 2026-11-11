@@ -73,7 +73,7 @@ The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons imp
 
 ## Events
 
-The controller publishes events.k8s.io/v1 Events on the `StorageRequest`, once per state transition: `PVCRequested` when it creates the PVC, `PVCBound` and `PVCResizing` (Normal) when the request enters those states, and a Warning whose reason is the condition reason when it enters a problem state (for example `PVCMissing` or `OwnershipMismatch`).
+The controller publishes events.k8s.io/v1 Events on the `StorageRequest`, once per state transition: `PVCRequested` when it creates the PVC, `PVCBound` (Normal) when `Ready` becomes `True`, `PVCResizing` (Normal) when the `Ready` reason becomes `Resizing`, and a Warning whose reason is the `Degraded` reason when `Degraded` becomes `True` or changes reason (for example `PVCMissing` or `OwnershipMismatch`). Event notes are truncated to the 1024-byte API limit.
 
 A request for a smaller size than an already provisioned PVC may remain usable: `Ready` can remain true when actual capacity still satisfies the request, while `Degraded=True` explains that shrinking is unsupported and the existing claim was left unchanged.
 

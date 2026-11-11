@@ -156,9 +156,16 @@ func TestProjectAndClearClaim(t *testing.T) {
 	if status.Capacity == nil || status.Capacity.Cmp(resource.MustParse(requestedSize)) != 0 {
 		t.Fatalf("projected capacity = %v, want 20Gi", status.Capacity)
 	}
-	// The projection is a copy: changing the PVC afterwards must not leak in.
-	pvc.Status.Capacity[corev1.ResourceStorage] = resource.MustParse("1Gi")
-	if status.Capacity.Cmp(resource.MustParse(requestedSize)) != 0 {
+	// The projection is a deep copy. A quantity with more significant digits
+	// than int64 holds keeps its value behind a pointer that a shallow copy
+	// would share, so mutating the PVC's quantity in place afterwards must not
+	// change the projected one.
+	const wide = "12345678901234567890123"
+	huge := resource.MustParse(wide)
+	pvc.Status.Capacity[corev1.ResourceStorage] = huge
+	ProjectClaim(status, pvc)
+	huge.Add(resource.MustParse(wide))
+	if status.Capacity.Cmp(resource.MustParse(wide)) != 0 {
 		t.Fatalf("projected capacity aliases the PVC: %v", status.Capacity)
 	}
 

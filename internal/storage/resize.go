@@ -19,6 +19,7 @@ package storage
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -65,22 +66,30 @@ var inProgressResizeConditions = map[corev1.PersistentVolumeClaimConditionType]s
 	corev1.PersistentVolumeClaimNodeResizeError:         {},
 }
 
+// Bounds on the PVC text copied into status. Condition messages come from the
+// resize controller and CSI driver and have no length limit of their own; the
+// copy must stay far below the 32768-character condition message limit.
+const (
+	maxConditionDetail = 512
+	maxResizeEvidence  = 2048
+)
+
 // ObserveResize reports the PVC's expansion state and a short description of
-// the evidence, built from status.allocatedResourceStatuses["storage"] (where
-// the API server serves it) and the PVC resize conditions. A terminal status
-// wins over any in-progress signal.
+// the evidence, built from status.allocatedResourceStatuses["storage"] (when
+// the PVC reports it) and the PVC resize conditions. A terminal status wins
+// over any in-progress signal. The evidence is bounded in length.
 func ObserveResize(pvc *corev1.PersistentVolumeClaim) (ResizeState, string) {
-	allocated, served := pvc.Status.AllocatedResourceStatuses[corev1.ResourceStorage]
+	allocated, present := pvc.Status.AllocatedResourceStatuses[corev1.ResourceStorage]
 	details := resizeConditionDetails(pvc)
 
-	if _, terminal := terminalResizeStatuses[allocated]; served && terminal {
+	if _, terminal := terminalResizeStatuses[allocated]; present && terminal {
 		return ResizeFailed, describe(fmt.Sprintf("allocated resource status %s", allocated), details)
 	}
-	if _, running := inProgressResizeStatuses[allocated]; served && running {
+	if _, running := inProgressResizeStatuses[allocated]; present && running {
 		return ResizeInProgress, describe(fmt.Sprintf("allocated resource status %s", allocated), details)
 	}
 	if details != "" {
-		return ResizeInProgress, details
+		return ResizeInProgress, Truncate(details, maxResizeEvidence)
 	}
 	return ResizeNone, ""
 }
@@ -97,7 +106,9 @@ func resizeConditionDetails(pvc *corev1.PersistentVolumeClaim) string {
 			parts = append(parts, string(c.Type))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s: %s", c.Type, c.Message))
+		// Trailing periods are dropped so callers can end their own sentence.
+		message := Truncate(strings.TrimRight(c.Message, ". "), maxConditionDetail)
+		parts = append(parts, fmt.Sprintf("%s: %s", c.Type, message))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -106,5 +117,19 @@ func describe(primary, details string) string {
 	if details == "" {
 		return primary
 	}
-	return primary + "; " + details
+	return Truncate(primary+"; "+details, maxResizeEvidence)
+}
+
+// Truncate shortens s to at most limit bytes without splitting a UTF-8
+// character, marking a cut with a trailing ellipsis.
+func Truncate(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	const ellipsis = "…"
+	cut := limit - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }
