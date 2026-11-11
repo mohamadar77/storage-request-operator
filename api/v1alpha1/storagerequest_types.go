@@ -134,6 +134,12 @@ const (
 	// EventPVCResizing: the bound PVC's capacity is below the request, or
 	// Kubernetes reports resize work pending or in progress.
 	EventPVCResizing = "PVCResizing"
+	// EventStorageRetained: a Retain finalization detached the managed PVC and
+	// left it in place.
+	EventStorageRetained = "StorageRetained"
+	// EventPVCDeletionRequested: a Delete finalization requested deletion of the
+	// managed PVC.
+	EventPVCDeletionRequested = "PVCDeletionRequested"
 )
 
 // OnDeletePolicy selects the PVC retention behavior when a StorageRequest is deleted.

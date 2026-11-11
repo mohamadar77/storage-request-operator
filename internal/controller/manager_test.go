@@ -209,6 +209,56 @@ var _ = Describe("StorageRequest controller running in a manager", func() {
 		Consistently(expectEvents, 2*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 
+	It("runs Delete finalization end to end: the request and its PVC are removed", func() {
+		namespace := startManager()
+		key := types.NamespacedName{Namespace: namespace, Name: requestName}
+		sr := &storagev1alpha1.StorageRequest{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: requestName},
+			Spec: storagev1alpha1.StorageRequestSpec{
+				Storage:   storagev1alpha1.StorageSpec{Size: resource.MustParse("1Gi")},
+				Lifecycle: storagev1alpha1.LifecycleSpec{OnDelete: storagev1alpha1.OnDeleteDelete},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sr)).To(Succeed())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, key, pvc)).To(Succeed())
+			got := &storagev1alpha1.StorageRequest{}
+			g.Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			g.Expect(got.Status.PVCUID).To(Equal(pvc.UID))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+		waitSettled(key)
+
+		By("deleting the request")
+		Expect(k8sClient.Delete(ctx, sr)).To(Succeed())
+
+		By("the controller requesting PVC deletion and waiting")
+		Eventually(func(g Gomega) {
+			current := &corev1.PersistentVolumeClaim{}
+			g.Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+			g.Expect(current.DeletionTimestamp.IsZero()).To(BeFalse())
+		}, watchTimeout, 100*time.Millisecond).Should(Succeed())
+		// The request is still present, held by its finalizer, while the PVC
+		// lingers under pvc-protection.
+		held := &storagev1alpha1.StorageRequest{}
+		Expect(k8sClient.Get(ctx, key, held)).To(Succeed())
+		Expect(held.DeletionTimestamp.IsZero()).To(BeFalse())
+
+		By("clearing pvc-protection so the claim can disappear")
+		current := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+		base := current.DeepCopy()
+		current.Finalizers = nil
+		Expect(k8sClient.Patch(ctx, current, client.MergeFrom(base))).To(Succeed())
+
+		By("the request and PVC both becoming NotFound")
+		Eventually(func(g Gomega) {
+			g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, &corev1.PersistentVolumeClaim{}))).To(BeTrue())
+			g.Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, &storagev1alpha1.StorageRequest{}))).To(BeTrue())
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
 	It("does not reconcile for events of an unmarked same-name PVC", func() {
 		namespace := startManager()
 		key := types.NamespacedName{Namespace: namespace, Name: requestName}

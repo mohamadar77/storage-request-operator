@@ -1518,31 +1518,167 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 		})
 	})
 
-	Context("deletion", func() {
-		It("keeps the finalizer and the PVC, because finalization is not implemented yet", func() {
-			sr := createRequest()
-			pvc := provision()
-			Expect(k8sClient.Delete(ctx, sr)).To(Succeed())
+	Context("finalization", func() {
+		deleteRequest := func() {
+			GinkgoHelper()
+			Expect(k8sClient.Delete(ctx, getRequest())).To(Succeed())
+		}
+		expectRequestGone := func() {
+			GinkgoHelper()
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, &storagev1alpha1.StorageRequest{}))).To(BeTrue(),
+				"the StorageRequest should be gone once the finalizer is removed")
+		}
+		createDeleteRequest := func() *storagev1alpha1.StorageRequest {
+			GinkgoHelper()
+			sr := &storagev1alpha1.StorageRequest{
+				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: requestName},
+				Spec: storagev1alpha1.StorageRequestSpec{
+					Storage:   storagev1alpha1.StorageSpec{Size: resource.MustParse("20Gi")},
+					Lifecycle: storagev1alpha1.LifecycleSpec{OnDelete: storagev1alpha1.OnDeleteDelete},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sr)).To(Succeed())
+			return sr
+		}
+		// clearPVCProtection removes the pvc-protection finalizer the API server
+		// adds, standing in for the protection controller that does not run in
+		// envtest, so a terminating PVC can actually disappear.
+		clearPVCProtection := func() {
+			GinkgoHelper()
+			pvc := &corev1.PersistentVolumeClaim{}
+			if apierrors.IsNotFound(k8sClient.Get(ctx, key, pvc)) {
+				return
+			}
+			base := pvc.DeepCopy()
+			pvc.Finalizers = nil
+			Expect(k8sClient.Patch(ctx, pvc, client.MergeFrom(base))).To(Succeed())
+		}
 
-			reconcileOnce()
+		Context("Retain", func() {
+			It("detaches the PVC and removes the finalizer, leaving the claim in place", func() {
+				sr := createRequest() // Retain is the default
+				pvc := provision()
+				deleteRequest()
 
-			got := getRequest()
-			Expect(got.DeletionTimestamp.IsZero()).To(BeFalse())
-			Expect(controllerutil.ContainsFinalizer(got, storagev1alpha1.Finalizer)).To(BeTrue())
-			Expect(getPVC().ResourceVersion).To(Equal(pvc.ResourceVersion))
+				result := reconcileOnce()
+
+				Expect(result).To(Equal(ctrl.Result{}))
+				expectRequestGone()
+				retained := getPVC()
+				Expect(retained.UID).To(Equal(pvc.UID))
+				Expect(retained.DeletionTimestamp.IsZero()).To(BeTrue(), "the claim must not be deleted")
+				Expect(retained.Annotations).To(HaveKeyWithValue(storagev1alpha1.AnnotationOrphanedFrom, string(sr.UID)))
+				Expect(retained.Labels).NotTo(HaveKey(storagev1alpha1.LabelManaged))
+				Expect(drainEvents()).To(ContainElement(HavePrefix("Normal StorageRetained ")))
+			})
+
+			It("completes when the PVC is already gone", func() {
+				createRequest()
+				provision()
+				removePVC()
+				deleteRequest()
+
+				reconcileOnce()
+
+				expectRequestGone()
+			})
+
+			It("leaves an unowned same-name PVC untouched and still completes", func() {
+				createRequest()
+				reconcileOnce() // finalizer only; no PVC recorded
+				foreign := createForeignPVC("")
+				deleteRequest()
+
+				reconcileOnce()
+
+				expectRequestGone()
+				after := getPVC()
+				Expect(after.ResourceVersion).To(Equal(foreign.ResourceVersion), "the unowned claim must not be changed")
+				Expect(after.Annotations).NotTo(HaveKey(storagev1alpha1.AnnotationOrphanedFrom))
+				Expect(drainEvents()).To(ContainElement(HavePrefix("Warning OwnershipMismatch ")))
+			})
+
+			It("does not claim retention when the PVC is already terminating", func() {
+				createRequest()
+				pvc := provision()
+				Expect(k8sClient.Delete(ctx, pvc)).To(Succeed()) // pvc-protection keeps it terminating
+				Expect(getPVC().DeletionTimestamp.IsZero()).To(BeFalse())
+				deleteRequest()
+
+				reconcileOnce()
+
+				expectRequestGone()
+				terminating := getPVC()
+				Expect(terminating.Annotations).NotTo(HaveKey(storagev1alpha1.AnnotationOrphanedFrom),
+					"a terminating claim is not detached or marked retained")
+				Expect(drainEvents()).To(ContainElement(HavePrefix("Warning PVCDeleting ")))
+			})
 		})
 
-		It("creates no PVC for a request deleted before its PVC existed, and does not requeue or write", func() {
-			sr := createRequest()
-			reconcileOnce() // finalizer
-			Expect(k8sClient.Delete(ctx, sr)).To(Succeed())
-			before := getRequest()
+		Context("Delete", func() {
+			It("deletes the owned PVC with a UID precondition, then removes the finalizer", func() {
+				createDeleteRequest()
+				provision()
+				deleteRequest()
 
-			result := reconcileOnce()
+				// The first reconcile requests deletion; pvc-protection keeps the
+				// claim terminating until the protection finalizer is cleared.
+				Expect(reconcileOnce().RequeueAfter).To(Equal(staleCacheRequeue))
+				Expect(getPVC().DeletionTimestamp.IsZero()).To(BeFalse())
+				Expect(getRequest().DeletionTimestamp.IsZero()).To(BeFalse(), "the request waits for the claim")
+				Expect(drainEvents()).To(ContainElement(HavePrefix("Normal PVCDeletionRequested ")))
 
-			Expect(result).To(Equal(ctrl.Result{}))
-			Expect(getRequest().ResourceVersion).To(Equal(before.ResourceVersion))
-			expectNoPVC()
+				clearPVCProtection()
+				reconcileOnce()
+
+				expectRequestGone()
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, &corev1.PersistentVolumeClaim{}))).To(BeTrue())
+			})
+
+			It("waits while the PVC is still terminating and keeps the finalizer", func() {
+				createDeleteRequest()
+				provision()
+				deleteRequest()
+				reconcileOnce() // requests deletion
+
+				Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue), "still terminating")
+
+				got := getRequest()
+				Expect(got.DeletionTimestamp.IsZero()).To(BeFalse())
+				Expect(controllerutil.ContainsFinalizer(got, storagev1alpha1.Finalizer)).To(BeTrue())
+			})
+
+			It("keeps the request finalizer when ownership cannot be proven", func() {
+				createDeleteRequest()
+				reconcileOnce() // finalizer only; nothing recorded
+				foreign := createForeignPVC("")
+				deleteRequest()
+
+				Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue))
+
+				got := getRequest()
+				Expect(got.DeletionTimestamp.IsZero()).To(BeFalse())
+				Expect(controllerutil.ContainsFinalizer(got, storagev1alpha1.Finalizer)).To(BeTrue(),
+					"an unprovable claim blocks deletion for an administrator to resolve")
+				Expect(getPVC().ResourceVersion).To(Equal(foreign.ResourceVersion))
+				Expect(drainEvents()).To(ContainElement(HavePrefix("Warning OwnershipMismatch ")))
+			})
+
+			It("never deletes a same-name replacement with a different UID", func() {
+				sr := createDeleteRequest()
+				original := provision()
+				removePVC()
+				replacement := createForeignPVC(string(sr.UID)) // request-UID copied, new PVC UID
+				Expect(replacement.UID).NotTo(Equal(original.UID))
+				deleteRequest()
+
+				Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue))
+
+				got := getPVC()
+				Expect(got.UID).To(Equal(replacement.UID))
+				Expect(got.DeletionTimestamp.IsZero()).To(BeTrue(), "the replacement must not be deleted")
+				Expect(controllerutil.ContainsFinalizer(getRequest(), storagev1alpha1.Finalizer)).To(BeTrue())
+			})
 		})
 	})
 })
