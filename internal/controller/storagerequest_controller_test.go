@@ -47,7 +47,10 @@ import (
 // deterministic reconcile and PVCs stay Pending unless a test sets their status.
 // Client interceptors simulate a stale cache and failed writes.
 
-const requestName = "app-data"
+const (
+	requestName = "app-data"
+	resourcePVC = "persistentvolumeclaims"
+)
 
 var errInjected = errors.New("injected failure")
 
@@ -516,7 +519,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			return interceptor.NewClient(k8sClient, interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if isPVC(obj) {
-						return apierrors.NewNotFound(schema.GroupResource{Resource: "persistentvolumeclaims"}, k.Name)
+						return apierrors.NewNotFound(schema.GroupResource{Resource: resourcePVC}, k.Name)
 					}
 					return c.Get(ctx, k, obj, opts...)
 				},
@@ -593,7 +596,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			return interceptor.NewClient(inner, interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if isPVC(obj) {
-						return apierrors.NewNotFound(schema.GroupResource{Resource: "persistentvolumeclaims"}, k.Name)
+						return apierrors.NewNotFound(schema.GroupResource{Resource: resourcePVC}, k.Name)
 					}
 					return c.Get(ctx, k, obj, opts...)
 				},
@@ -1482,6 +1485,36 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			expectClaimRequest("20Gi")
 			Expect(getRequest().Status.Conditions).To(Equal(before.Status.Conditions))
 			Expect(drainEvents()).To(BeEmpty())
+		})
+
+		It("reports ResizeRejected instead of looping when the API server refuses the resize patch", func() {
+			boundWithClass(new(true))
+			setSize("30Gi")
+			// The API server can refuse the request change itself, for example
+			// for a statically provisioned claim. That is a persistent state,
+			// not a transient error, so it must surface as a condition.
+			rejectPatch := interceptor.NewClient(k8sClient, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch,
+					opts ...client.PatchOption) error {
+					if isPVC(obj) {
+						return apierrors.NewForbidden(
+							schema.GroupResource{Resource: resourcePVC}, obj.GetName(),
+							errors.New("only dynamically provisioned pvc can be resized"))
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			})
+
+			_, err := reconcileWith(rejectPatch)
+
+			Expect(err).NotTo(HaveOccurred(), "a refused patch must not loop in backoff")
+			expectClaimRequest("20Gi")
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizeRejected)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonResizeRejected)
+			degraded := meta.FindStatusCondition(got.Status.Conditions, storagev1alpha1.ConditionDegraded)
+			Expect(degraded.Message).To(ContainSubstring("only dynamically provisioned pvc can be resized"))
+			Expect(drainEvents()).To(ContainElement(HavePrefix("Warning ResizeRejected ")))
 		})
 	})
 

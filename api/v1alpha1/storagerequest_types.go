@@ -94,6 +94,11 @@ const (
 	// ReasonExpansionNotSupported: the claim's StorageClass does not allow
 	// volume expansion, so the larger size was not applied.
 	ReasonExpansionNotSupported = "ExpansionNotSupported"
+	// ReasonResizeRejected: the API server refused the storage request change
+	// (for example a statically provisioned claim, or a recovery decrease on a
+	// cluster that does not support failed-expansion recovery). The claim is
+	// left unchanged instead of retrying the same rejected patch forever.
+	ReasonResizeRejected = "ResizeRejected"
 	// ReasonStorageClassNotFound: the claim's StorageClass could not be
 	// resolved, so expansion could not be verified and was not applied.
 	ReasonStorageClassNotFound = "StorageClassNotFound"

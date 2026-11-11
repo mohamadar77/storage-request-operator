@@ -69,7 +69,7 @@ Expected machine-readable reasons include:
 - `InvalidSpec` (the spec failed the controller's defensive validation; no PVC was created or changed)
 - `AsExpected` (the `Degraded=False` reason when no problem is detected)
 
-The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `Resizing`, `ResizeFailed`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`. `ImmutableFieldChange`, `ShrinkNotSupported`, `ResizeRecoveryRejected`, `ExpansionNotSupported`, and `StorageClassNotFound` are reported by milestone 5 when a spec change cannot be applied to the claim.
+The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `Resizing`, `ResizeFailed`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`. `ImmutableFieldChange`, `ShrinkNotSupported`, `ResizeRecoveryRejected`, `ExpansionNotSupported`, `StorageClassNotFound`, and `ResizeRejected` are reported by milestone 5 when a spec change cannot be applied to the claim. `ResizeRejected` means the API server itself refused the request change (for example a statically provisioned claim, or a recovery decrease on a cluster without failed-expansion recovery); the operator reports it rather than retrying the same patch forever.
 
 ## Events
 
