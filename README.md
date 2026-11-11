@@ -2,7 +2,7 @@
 
 A Kubernetes Operator that manages one `PersistentVolumeClaim` (PVC) for each namespaced `StorageRequest`, with ownership-safe reconciliation, capacity expansion, lifecycle status, and explicit retention behavior.
 
-> **Project status:** The v1alpha1 design is approved for implementation. The repository is a project starter; implementation and release-readiness checks are not yet complete.
+> **Project status:** Under active implementation against the approved v1alpha1 design. Milestones 1–3 (scaffold, API, PVC creation and identity) are complete; see the roadmap below. The operator is not yet usable outside a disposable test cluster: until finalization (milestone 6) lands, a deleted `StorageRequest` stays in `Terminating`.
 
 ## What it does
 
