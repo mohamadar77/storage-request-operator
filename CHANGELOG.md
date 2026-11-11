@@ -25,5 +25,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - PVC watches, Kubernetes Events, and full status projection (milestone 4). Until then `status.pvcPhase`, `status.volumeName`, and `status.capacity` are not populated, so the `Phase` and `Capacity` print columns are empty.
 - Resize (milestone 5). Until then an increase of `spec.storage.size` is not applied to the PVC; `Ready` stays `False` because the reported capacity is below the request.
-- Finalization (milestone 6). Until then a deleted `StorageRequest` keeps its finalizer and stays in `Terminating`, and so does its namespace.- Remaining operational hardening (milestone 7).
+- Finalization (milestone 6). Until then a deleted `StorageRequest` keeps its finalizer and stays in `Terminating`, and so does its namespace.
+- Remaining operational hardening (milestone 7).
 - CSI-backed end-to-end tests (milestone 8).
