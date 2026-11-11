@@ -46,14 +46,22 @@ Milestone 3 notes:
 
 ## Milestone 4 — Watches, status, and events
 
-- [ ] Watch `StorageRequest` objects.
-- [ ] Watch managed PVC events and map each PVC to the same-namespace request name.
-- [ ] Re-check identity on every mapped reconcile.
-- [ ] Implement standard conditions, stable reasons, and accurate `observedGeneration`.
-- [ ] Implement PVC phase, PV name, actual capacity, and resize-state projection.
-- [ ] Preserve transition timestamps when conditions do not materially change.
-- [ ] Emit events only for meaningful transitions and actionable failures.
-- [ ] Add bounded fallback requeue and watch-predicate tests.
+- [x] Watch `StorageRequest` objects.
+- [x] Watch managed PVC events and map each PVC to the same-namespace request name.
+- [x] Re-check identity on every mapped reconcile.
+- [x] Implement standard conditions, stable reasons, and accurate `observedGeneration`.
+- [x] Implement PVC phase, PV name, actual capacity, and resize-state projection.
+- [x] Preserve transition timestamps when conditions do not materially change.
+- [x] Emit events only for meaningful transitions and actionable failures.
+- [x] Add bounded fallback requeue and watch-predicate tests.
+
+Milestone 4 notes:
+
+- PVC events pass the watch predicate when the old or new object carries the `storage.example.io/managed=true` label or the request-UID annotation, so label removal, annotation removal, and deletion-timestamp updates still reconcile. `StorageRequest` events are not filtered. The mapping is by namespace and name only; identity is decided in `Reconcile`.
+- An unmarked same-name PVC does not pass the predicate. Its appearance or removal (for example, a `PVCNameConflict` clearing) is noticed by the 30-second fallback requeue, which every active request keeps.
+- Resize state is observed, not acted on: `Ready=False`, reason `Resizing`, while `status.allocatedResourceStatuses["storage"]` or the PVC resize conditions report pending or in-progress work, or while a bound claim reports less capacity than requested. An infeasible allocated-resource status (or its alpha name `ControllerResizeFailed`/`NodeResizeFailed`) sets `Degraded=True`, reason `ResizeFailed`. The controller still never patches the PVC size; that is Milestone 5.
+- Events are published through the events.k8s.io/v1 API and emitted only after the status write that records a new state succeeds, so each transition yields one Event and a rejected write yields none. `PVCRequested` is emitted on PVC creation, `PVCBound` and `PVCResizing` on entering those states, and every problem state as a Warning whose reason is the condition reason. `OwnershipMismatch`, `VolumeLost`, and `InvalidSpec` Warnings are in addition to the design's Event list.
+- Condition logic lives in `internal/conditions` and resize observation in `internal/storage/resize.go`, as laid out in design section 9.1.
 
 ## Milestone 5 — Safe updates and resize
 

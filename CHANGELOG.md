@@ -16,6 +16,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Milestone 2: `StorageRequest` v1alpha1 API (`StorageRequestSpec`/`StorageSpec`/`LifecycleSpec`/`StorageRequestStatus`), CRD with CEL positive-quantity validation, enum/minItems/set/minLength constraints, server-side defaults (access modes, volume mode, `onDelete`), and the status subresource. Shared identity, finalizer, and condition constants. Defensive Go validation with table-driven unit tests, an envtest integration suite (CRD install, CEL, defaults, status subresource), and a filled sample manifest.
 - Milestone 1-2 review fixes: guarded size CEL rule (rejects pathological exponents before any quantity call, accepts integers), `status.pvcUID` immutable once set, CI check for stale generated files.
 - Milestone 3: `StorageRequest` controller that persists its finalizer before creating a PVC, builds a deterministic PVC with identity labels and the request UID annotation (no owner reference), records the PVC UID in status immediately, and verifies identity on every reconcile. Same-name PVCs are never adopted (`PVCNameConflict`, `OwnershipMismatch`), a recorded PVC that disappears is never recreated (`PVCMissing`), and a terminating PVC is reported (`PVCDeleting`). Generated RBAC now grants only StorageRequest read/patch, status patch, and PVC read/create.
+- Milestone 4: watch on managed PVCs (label or request-UID annotation, old or new object) mapped to the same-name request; `status.pvcPhase`, `status.volumeName`, and `status.capacity` projected from a verified claim and cleared for a missing or foreign one; read-only resize-state observation (`Resizing`, `ResizeFailed`); events.k8s.io/v1 Events once per state transition (`PVCRequested`, `PVCBound`, `PVCResizing`, and a Warning per problem reason). RBAC adds Event `create`/`patch`.
 
 ### Changed
 
@@ -23,7 +24,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Not yet implemented
 
-- PVC watches, Kubernetes Events, and full status projection (milestone 4). Until then `status.pvcPhase`, `status.volumeName`, and `status.capacity` are not populated, so the `Phase` and `Capacity` print columns are empty.
 - Resize (milestone 5). Until then an increase of `spec.storage.size` is not applied to the PVC; `Ready` stays `False` because the reported capacity is below the request.
 - Finalization (milestone 6). Until then a deleted `StorageRequest` keeps its finalizer and stays in `Terminating`, and so does its namespace.
 - Remaining operational hardening (milestone 7).

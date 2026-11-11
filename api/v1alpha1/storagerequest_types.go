@@ -66,12 +66,19 @@ const (
 // Condition reasons. Reasons are part of the API contract: tooling and alerts
 // match on them, so existing values must not be renamed.
 const (
-	// ReasonProvisioning: the managed PVC exists but is not yet bound with the
-	// requested capacity.
+	// ReasonProvisioning: the managed PVC exists but is not yet bound, or is
+	// bound and reports no capacity yet.
 	ReasonProvisioning = "Provisioning"
 	// ReasonBound: the managed PVC is bound and reports at least the requested
 	// capacity.
 	ReasonBound = "Bound"
+	// ReasonResizing: the managed PVC is bound but its actual capacity is below
+	// the requested size, or Kubernetes reports resize work pending or in
+	// progress.
+	ReasonResizing = "Resizing"
+	// ReasonResizeFailed: Kubernetes reports a terminal (infeasible) resize
+	// failure for the managed PVC.
+	ReasonResizeFailed = "ResizeFailed"
 	// ReasonVolumeLost: the managed PVC reports phase Lost.
 	ReasonVolumeLost = "VolumeLost"
 	// ReasonPVCNameConflict: a PVC with the expected name exists but is not
@@ -91,6 +98,19 @@ const (
 	ReasonInvalidSpec = "InvalidSpec"
 	// ReasonAsExpected is the Degraded=False reason when no problem is detected.
 	ReasonAsExpected = "AsExpected"
+)
+
+// Kubernetes Event reasons for transitions that have no condition reason of
+// their own. A request entering a problem state is published as a Warning
+// Event whose reason is the condition reason (for example PVCMissing).
+const (
+	// EventPVCRequested: the controller created the managed PVC.
+	EventPVCRequested = "PVCRequested"
+	// EventPVCBound: the request became Ready with a bound PVC.
+	EventPVCBound = "PVCBound"
+	// EventPVCResizing: the bound PVC's capacity is below the request, or
+	// Kubernetes reports resize work pending or in progress.
+	EventPVCResizing = "PVCResizing"
 )
 
 // OnDeletePolicy selects the PVC retention behavior when a StorageRequest is deleted.

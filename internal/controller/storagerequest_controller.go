@@ -27,20 +27,36 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	storagev1alpha1 "github.com/mohamadar77/storage-request-operator/api/v1alpha1"
+	"github.com/mohamadar77/storage-request-operator/internal/conditions"
 	"github.com/mohamadar77/storage-request-operator/internal/storage"
 )
 
 // fallbackRequeue is the bounded requeue used for every state of an active
-// request, Ready included: a PVC can be bound, deleted, replaced, or lost
-// without producing an event this controller watches. PVC watches arrive in a
-// later milestone; this requeue then remains as the fallback for missed events.
+// request, Ready included. Watch events on managed PVCs are the primary
+// progress signal; this requeue covers what the watch cannot see (an unmarked
+// same-name PVC appearing or disappearing, a marker removed while the cache was
+// disconnected) and any missed event.
 const fallbackRequeue = 30 * time.Second
+
+// eventAction is the events.k8s.io/v1 action recorded with the controller's
+// Events.
+const (
+	eventActionReconcile = "Reconcile"
+	eventActionCreate    = "CreatePersistentVolumeClaim"
+)
 
 // staleCacheRequeue is the short retry used when the cached StorageRequest
 // disagrees with the API server, so the next attempt reads a fresher cache.
@@ -48,7 +64,7 @@ const staleCacheRequeue = time.Second
 
 // StorageRequestReconciler reconciles a StorageRequest object.
 //
-// Safety contract for this milestone (design v1.1, sections 5 and 6.2):
+// Safety contract (design v1.1, sections 5, 6.2, and 6.5):
 //
 //   - the finalizer is persisted before any PVC is created;
 //   - a PVC is created only when no PVC UID was ever recorded, and that is
@@ -60,7 +76,9 @@ const staleCacheRequeue = time.Second
 //     decision made on a stale object is rejected instead of persisted;
 //   - an existing PVC is never adopted, changed, or deleted unless the request
 //     UID annotation and the recorded PVC UID both match;
-//   - a recorded PVC that disappears is reported, never recreated.
+//   - a recorded PVC that disappears is reported, never recreated;
+//   - status reports a PVC's phase, volume, and capacity only after its
+//     identity is verified, and Events are emitted only for state transitions.
 //
 // The controller does not yet change or delete any PVC it did not just create.
 type StorageRequestReconciler struct {
@@ -70,11 +88,15 @@ type StorageRequestReconciler struct {
 	// create a second PVC or report an existing one as missing.
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
+	// Recorder publishes events.k8s.io/v1 Events. SetupWithManager provides
+	// the manager's recorder when this is nil.
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests/status,verbs=get;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile moves one StorageRequest toward its desired state. It is
 // idempotent and never waits for provisioning.
@@ -142,7 +164,7 @@ func (r *StorageRequestReconciler) rejectInvalidSpec(
 	detail := errs.ToAggregate().Error()
 	logf.FromContext(ctx).Info("StorageRequest spec failed validation", "errors", detail)
 	err := r.patchStatus(ctx, sr, func(status *storagev1alpha1.StorageRequestStatus) {
-		setProblem(status, sr.Generation, storagev1alpha1.ReasonInvalidSpec,
+		conditions.SetProblem(status, sr.Generation, storagev1alpha1.ReasonInvalidSpec,
 			"Spec failed validation, so no PersistentVolumeClaim was created or changed: "+detail)
 	})
 	if err != nil {
@@ -207,6 +229,8 @@ func (r *StorageRequestReconciler) reconcileAbsentPVC(
 		return ctrl.Result{}, fmt.Errorf("creating PersistentVolumeClaim: %w", err)
 	}
 	log.Info("Created PersistentVolumeClaim", "pvcUID", pvc.UID)
+	r.Recorder.Eventf(sr, pvc, corev1.EventTypeNormal, storagev1alpha1.EventPVCRequested, eventActionCreate,
+		"Created PersistentVolumeClaim %s", pvc.Name)
 
 	// The new PVC carries this request's UID and no PVC UID is recorded yet,
 	// so the shared path below records its UID in the very next call. If that
@@ -231,7 +255,10 @@ func (r *StorageRequestReconciler) reconcileExistingPVC(
 		}
 		log.Info("PersistentVolumeClaim failed the identity check and was left unchanged", "reason", reason)
 		err := r.patchStatus(ctx, sr, func(status *storagev1alpha1.StorageRequestStatus) {
-			setProblem(status, sr.Generation, reason, message)
+			// The same-name PVC is not this request's claim: never report its
+			// phase, volume, or capacity as if it were.
+			conditions.ClearClaim(status)
+			conditions.SetProblem(status, sr.Generation, reason, message)
 		})
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("reporting PersistentVolumeClaim identity failure in status: %w", err)
@@ -244,21 +271,12 @@ func (r *StorageRequestReconciler) reconcileExistingPVC(
 	// that does not yet show a recorded UID, the write is rejected as a
 	// conflict rather than recording a different PVC.
 	terminating := !pvc.DeletionTimestamp.IsZero()
+	health := conditions.AssessClaim(sr, pvc)
 	err := r.patchStatus(ctx, sr, func(status *storagev1alpha1.StorageRequestStatus) {
 		status.PVCName = pvc.Name
 		status.PVCUID = pvc.UID
-		switch {
-		case terminating:
-			setProblem(status, sr.Generation, storagev1alpha1.ReasonPVCDeleting, fmt.Sprintf(
-				"PersistentVolumeClaim %s is being deleted while this request is active; "+
-					"no replacement will be created", pvc.Name))
-		case pvc.Status.Phase == corev1.ClaimLost:
-			setProblem(status, sr.Generation, storagev1alpha1.ReasonVolumeLost, fmt.Sprintf(
-				"PersistentVolumeClaim %s lost its PersistentVolume. It is not recreated automatically; "+
-					"inspect the PersistentVolume and backend", pvc.Name))
-		default:
-			setHealthy(status, sr, pvc)
-		}
+		conditions.ProjectClaim(status, pvc)
+		conditions.SetHealth(status, sr.Generation, health)
 	})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("recording PersistentVolumeClaim state in status: %w", err)
@@ -285,7 +303,8 @@ func (r *StorageRequestReconciler) reportMissing(
 			"inspect the PersistentVolume and backend before creating a new StorageRequest",
 		sr.Name, sr.Status.PVCUID)
 	err := r.patchStatus(ctx, sr, func(status *storagev1alpha1.StorageRequestStatus) {
-		setProblem(status, sr.Generation, storagev1alpha1.ReasonPVCMissing, message)
+		conditions.ClearClaim(status)
+		conditions.SetProblem(status, sr.Generation, storagev1alpha1.ReasonPVCMissing, message)
 	})
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reporting missing PersistentVolumeClaim in status: %w", err)
@@ -300,6 +319,11 @@ func (r *StorageRequestReconciler) reportMissing(
 // spec. It carries the resourceVersion of sr, so a status computed from a stale
 // object fails with a conflict and is retried instead of overwriting newer
 // state.
+//
+// After a successful write it emits an Event when the request's state (see
+// stateOf) changed. Tying the Event to the write that persisted the new state
+// emits it once per transition: a later reconcile reads the persisted state and
+// finds nothing new, and a write rejected as a conflict emits nothing.
 func (r *StorageRequestReconciler) patchStatus(
 	ctx context.Context, sr *storagev1alpha1.StorageRequest, mutate func(*storagev1alpha1.StorageRequestStatus),
 ) error {
@@ -309,72 +333,101 @@ func (r *StorageRequestReconciler) patchStatus(
 	if equality.Semantic.DeepEqual(base.Status, sr.Status) {
 		return nil
 	}
-	return r.Status().Patch(ctx, sr, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
-}
-
-// setProblem reports a persistent, actionable problem: Ready=False and
-// Degraded=True with the same reason. Transition times are preserved when the
-// condition status does not change.
-func setProblem(status *storagev1alpha1.StorageRequestStatus, generation int64, reason, message string) {
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{
-		Type:               storagev1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: generation,
-	})
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{
-		Type:               storagev1alpha1.ConditionDegraded,
-		Status:             metav1.ConditionTrue,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: generation,
-	})
-}
-
-// setHealthy reports a verified claim with no detected problem: Degraded=False,
-// and Ready=True only when the claim is bound with at least the requested
-// capacity. Resize awareness is added with the resize milestone; until then the
-// controller never changes the PVC size.
-func setHealthy(
-	status *storagev1alpha1.StorageRequestStatus, sr *storagev1alpha1.StorageRequest, pvc *corev1.PersistentVolumeClaim,
-) {
-	ready := metav1.Condition{
-		Type:               storagev1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             storagev1alpha1.ReasonProvisioning,
-		Message:            fmt.Sprintf("PersistentVolumeClaim %s is not bound yet.", pvc.Name),
-		ObservedGeneration: sr.Generation,
+	if err := r.Status().Patch(ctx, sr, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return err
 	}
-	if pvc.Status.Phase == corev1.ClaimBound {
-		capacity, reported := pvc.Status.Capacity[corev1.ResourceStorage]
-		switch {
-		case !reported:
-			ready.Message = fmt.Sprintf("PersistentVolumeClaim %s is bound but reports no capacity yet.", pvc.Name)
-		case capacity.Cmp(sr.Spec.Storage.Size) >= 0:
-			ready.Status = metav1.ConditionTrue
-			ready.Reason = storagev1alpha1.ReasonBound
-			ready.Message = fmt.Sprintf("PersistentVolumeClaim %s is bound and has the requested capacity.", pvc.Name)
-		default:
-			ready.Message = fmt.Sprintf(
-				"PersistentVolumeClaim %s is bound with capacity %s, which is below the requested %s.",
-				pvc.Name, capacity.String(), sr.Spec.Storage.Size.String())
-		}
-	}
-	meta.SetStatusCondition(&status.Conditions, ready)
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{
-		Type:               storagev1alpha1.ConditionDegraded,
-		Status:             metav1.ConditionFalse,
-		Reason:             storagev1alpha1.ReasonAsExpected,
-		Message:            "No storage request errors detected.",
-		ObservedGeneration: sr.Generation,
-	})
+	r.recordTransition(sr, stateOf(&base.Status), stateOf(&sr.Status))
+	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// requestState is the single reason that best summarizes a request: the
+// Degraded reason when a problem is reported, otherwise the Ready reason.
+type requestState struct {
+	reason, message string
+	warning         bool
+}
+
+func stateOf(status *storagev1alpha1.StorageRequestStatus) requestState {
+	if degraded := meta.FindStatusCondition(status.Conditions, storagev1alpha1.ConditionDegraded); degraded != nil &&
+		degraded.Status == metav1.ConditionTrue {
+		return requestState{reason: degraded.Reason, message: degraded.Message, warning: true}
+	}
+	if ready := meta.FindStatusCondition(status.Conditions, storagev1alpha1.ConditionReady); ready != nil {
+		return requestState{reason: ready.Reason, message: ready.Message}
+	}
+	return requestState{}
+}
+
+// transitionEvents maps the reason of a newly entered healthy state to its
+// Event reason. Provisioning has none: PVCRequested already covers it. Every
+// problem state is published as a Warning under its own condition reason.
+var transitionEvents = map[string]string{
+	storagev1alpha1.ReasonBound:    storagev1alpha1.EventPVCBound,
+	storagev1alpha1.ReasonResizing: storagev1alpha1.EventPVCResizing,
+}
+
+// recordTransition emits one Event when the request entered a new state.
+func (r *StorageRequestReconciler) recordTransition(sr *storagev1alpha1.StorageRequest, before, after requestState) {
+	if after.reason == "" || after.reason == before.reason {
+		return
+	}
+	if after.warning {
+		r.Recorder.Eventf(sr, nil, corev1.EventTypeWarning, after.reason, eventActionReconcile, "%s", after.message)
+		return
+	}
+	if reason, ok := transitionEvents[after.reason]; ok {
+		r.Recorder.Eventf(sr, nil, corev1.EventTypeNormal, reason, eventActionReconcile, "%s", after.message)
+	}
+}
+
+// isMarkedPVC reports whether a PVC carries either operator identity marker.
+// The marker only selects which events to look at; Reconcile still verifies
+// the request UID annotation and the recorded PVC UID before acting.
+func isMarkedPVC(obj client.Object) bool {
+	if obj == nil {
+		return false
+	}
+	if obj.GetLabels()[storagev1alpha1.LabelManaged] == storagev1alpha1.ManagedValue {
+		return true
+	}
+	_, annotated := obj.GetAnnotations()[storagev1alpha1.AnnotationRequestUID]
+	return annotated
+}
+
+// managedPVCPredicate passes create, update, delete, and generic events for
+// PVCs that carry an identity marker. An update passes when either the old or
+// the new object is marked, so removing the label or annotation, and setting a
+// deletion timestamp, still reach the request (design section 6.5).
+func managedPVCPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return isMarkedPVC(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return isMarkedPVC(e.ObjectOld) || isMarkedPVC(e.ObjectNew) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return isMarkedPVC(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return isMarkedPVC(e.Object) },
+	}
+}
+
+// requestForPVC maps a PVC to the StorageRequest with the same namespace and
+// name. It deliberately does not trust the annotation to pick the request: the
+// mapping is by name, and identity is decided inside Reconcile.
+func requestForPVC(_ context.Context, obj client.Object) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: obj.GetNamespace(), Name: obj.GetName(),
+	}}}
+}
+
+// SetupWithManager sets up the controller with the Manager. StorageRequest
+// events are not filtered, so finalizer and deletion-timestamp updates always
+// reconcile. PVCs are not owner-referenced, so they are watched explicitly.
 func (r *StorageRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Recorder == nil {
+		r.Recorder = mgr.GetEventRecorder("storagerequest-controller")
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&storagev1alpha1.StorageRequest{}).
+		Watches(&corev1.PersistentVolumeClaim{},
+			handler.EnqueueRequestsFromMapFunc(requestForPVC),
+			builder.WithPredicates(managedPVCPredicate())).
 		Named("storagerequest").
 		Complete(r)
 }

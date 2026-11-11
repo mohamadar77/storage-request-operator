@@ -24,6 +24,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -40,10 +42,14 @@ import (
 // This test runs the controller the way the manager binary does: through a
 // real manager, informer cache, and watch. It covers the wiring the direct
 // Reconcile tests cannot: SetupWithManager, the cached client, and the
-// finalizer update re-triggering the reconcile that creates the PVC.
+// finalizer update re-triggering the reconcile that creates the PVC, the PVC
+// watch, and Events published to the API server.
 var _ = Describe("StorageRequest controller running in a manager", func() {
-	It("adds the finalizer, creates the PVC, and records its UID without duplicates", func() {
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "m3-mgr-"}}
+	// startManager runs the controller in a manager whose cache is limited to a
+	// fresh namespace, and returns that namespace.
+	startManager := func() string {
+		GinkgoHelper()
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "mgr-"}}
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 
 		// The cache is limited to this namespace so the manager does not
@@ -70,14 +76,21 @@ var _ = Describe("StorageRequest controller running in a manager", func() {
 			stop()
 			Eventually(done, 10*time.Second).Should(Receive(BeNil()))
 		})
-
-		key := types.NamespacedName{Namespace: ns.Name, Name: "app-data"}
-		sr := &storagev1alpha1.StorageRequest{
-			ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name},
+		return ns.Name
+	}
+	newRequest := func(namespace string) *storagev1alpha1.StorageRequest {
+		return &storagev1alpha1.StorageRequest{
+			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: requestName},
 			Spec: storagev1alpha1.StorageRequestSpec{
 				Storage: storagev1alpha1.StorageSpec{Size: resource.MustParse("1Gi")},
 			},
 		}
+	}
+
+	It("adds the finalizer, creates the PVC, and records its UID without duplicates", func() {
+		namespace := startManager()
+		key := types.NamespacedName{Namespace: namespace, Name: requestName}
+		sr := newRequest(namespace)
 		Expect(k8sClient.Create(ctx, sr)).To(Succeed())
 
 		pvc := &corev1.PersistentVolumeClaim{}
@@ -93,10 +106,72 @@ var _ = Describe("StorageRequest controller running in a manager", func() {
 		// The controller settles: the same single PVC, unchanged.
 		Consistently(func(g Gomega) {
 			list := &corev1.PersistentVolumeClaimList{}
-			g.Expect(k8sClient.List(ctx, list, client.InNamespace(ns.Name))).To(Succeed())
+			g.Expect(k8sClient.List(ctx, list, client.InNamespace(namespace))).To(Succeed())
 			g.Expect(list.Items).To(HaveLen(1))
 			g.Expect(list.Items[0].UID).To(Equal(pvc.UID))
 			g.Expect(list.Items[0].ResourceVersion).To(Equal(pvc.ResourceVersion))
 		}, 2*time.Second, 200*time.Millisecond).Should(Succeed())
+	})
+
+	// The fallback requeue is 30 seconds, so a reaction within a few seconds
+	// can only come from the PVC watch.
+	const watchTimeout = 5 * time.Second
+
+	It("reacts to PVC binding and deletion through the PVC watch, and publishes Events", func() {
+		Expect(watchTimeout).To(BeNumerically("<", fallbackRequeue/2))
+		namespace := startManager()
+		key := types.NamespacedName{Namespace: namespace, Name: requestName}
+		sr := newRequest(namespace)
+		Expect(k8sClient.Create(ctx, sr)).To(Succeed())
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		Eventually(func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, key, pvc)).To(Succeed())
+			got := &storagev1alpha1.StorageRequest{}
+			g.Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			g.Expect(got.Status.PVCUID).To(Equal(pvc.UID))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		By("binding the PVC")
+		pvc.Status.Phase = corev1.ClaimBound
+		pvc.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}
+		Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+		Eventually(func(g Gomega) {
+			got := &storagev1alpha1.StorageRequest{}
+			g.Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			g.Expect(got.Status.PVCPhase).To(Equal(corev1.ClaimBound))
+			ready := meta.FindStatusCondition(got.Status.Conditions, storagev1alpha1.ConditionReady)
+			g.Expect(ready).NotTo(BeNil())
+			g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		}, watchTimeout, 100*time.Millisecond).Should(Succeed())
+
+		By("deleting the PVC")
+		Expect(k8sClient.Delete(ctx, pvc)).To(Succeed())
+		current := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+		base := current.DeepCopy()
+		current.Finalizers = nil // no pvc-protection controller runs in envtest
+		Expect(k8sClient.Patch(ctx, current, client.MergeFrom(base))).To(Succeed())
+		Eventually(func(g Gomega) {
+			got := &storagev1alpha1.StorageRequest{}
+			g.Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			degraded := meta.FindStatusCondition(got.Status.Conditions, storagev1alpha1.ConditionDegraded)
+			g.Expect(degraded).NotTo(BeNil())
+			g.Expect(degraded.Reason).To(Equal(storagev1alpha1.ReasonPVCMissing))
+		}, watchTimeout, 100*time.Millisecond).Should(Succeed())
+
+		By("reading the published Events")
+		Eventually(func(g Gomega) {
+			list := &eventsv1.EventList{}
+			g.Expect(k8sClient.List(ctx, list, client.InNamespace(namespace))).To(Succeed())
+			reasons := map[string]string{}
+			for _, e := range list.Items {
+				g.Expect(e.Regarding.UID).To(Equal(sr.UID))
+				reasons[e.Reason] = e.Type
+			}
+			g.Expect(reasons).To(HaveKeyWithValue(storagev1alpha1.EventPVCRequested, corev1.EventTypeNormal))
+			g.Expect(reasons).To(HaveKeyWithValue(storagev1alpha1.EventPVCBound, corev1.EventTypeNormal))
+			g.Expect(reasons).To(HaveKeyWithValue(storagev1alpha1.ReasonPVCMissing, corev1.EventTypeWarning))
+		}, 10*time.Second, 200*time.Millisecond).Should(Succeed())
 	})
 })

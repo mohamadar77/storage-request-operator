@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -52,12 +53,13 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 	var (
 		namespace string
 		key       types.NamespacedName
+		recorder  *events.FakeRecorder
 	)
 
 	// newReconciler builds a reconciler whose cached client is c and whose
 	// live reader is always the real API server.
 	newReconciler := func(c client.Client) *StorageRequestReconciler {
-		return &StorageRequestReconciler{Client: c, APIReader: k8sClient, Scheme: scheme.Scheme}
+		return &StorageRequestReconciler{Client: c, APIReader: k8sClient, Scheme: scheme.Scheme, Recorder: recorder}
 	}
 	reconcileWith := func(c client.Client) (ctrl.Result, error) {
 		return newReconciler(c).Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -176,6 +178,8 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 		namespace = ns.Name
 		key = types.NamespacedName{Namespace: namespace, Name: requestName}
+		// Large enough that no test blocks on an undrained channel.
+		recorder = events.NewFakeRecorder(1000)
 	})
 
 	It("does nothing for a StorageRequest that does not exist", func() {
@@ -311,7 +315,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 
 			reconcileOnce()
 
-			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonProvisioning)
+			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizing)
 		})
 
 		It("reports VolumeLost for a lost claim and does not replace it", func() {
@@ -339,7 +343,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
 		})
 
-		It("requeues a provisioning request, the only way binding is noticed without a PVC watch", func() {
+		It("requeues a provisioning request as a fallback for missed PVC events", func() {
 			createRequest()
 			reconcileOnce() // finalizer
 
@@ -409,7 +413,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 					return nil
 				},
 			})
-			r := &StorageRequestReconciler{Client: k8sClient, APIReader: liveInvalid, Scheme: scheme.Scheme}
+			r := &StorageRequestReconciler{Client: k8sClient, APIReader: liveInvalid, Scheme: scheme.Scheme, Recorder: recorder}
 
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 
@@ -767,6 +771,181 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 
 			expectProblem(storagev1alpha1.ReasonPVCMissing)
 			expectNoPVC()
+		})
+	})
+
+	Context("status projection, resize state, and events", func() {
+		// setPVCStatus applies mutate to the PVC status through the status
+		// subresource, standing in for the Kubernetes storage controllers.
+		setPVCStatus := func(mutate func(*corev1.PersistentVolumeClaimStatus)) *corev1.PersistentVolumeClaim {
+			GinkgoHelper()
+			pvc := getPVC()
+			mutate(&pvc.Status)
+			Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+			return pvc
+		}
+		bind := func(capacity string) *corev1.PersistentVolumeClaim {
+			GinkgoHelper()
+			pvc := getPVC()
+			pvc.Spec.VolumeName = "pv-" + namespace
+			Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
+			return setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.Phase = corev1.ClaimBound
+				status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)}
+			})
+		}
+		drainEvents := func() []string {
+			var got []string
+			for {
+				select {
+				case e := <-recorder.Events:
+					got = append(got, e)
+				default:
+					return got
+				}
+			}
+		}
+
+		It("projects the bound claim's phase, volume, and actual capacity", func() {
+			createRequest()
+			provision()
+			Expect(getRequest().Status.PVCPhase).To(Equal(corev1.ClaimPending))
+
+			bind("25Gi")
+			reconcileOnce()
+
+			got := getRequest()
+			Expect(got.Status.PVCPhase).To(Equal(corev1.ClaimBound))
+			Expect(got.Status.VolumeName).To(Equal("pv-" + namespace))
+			Expect(got.Status.Capacity).NotTo(BeNil())
+			Expect(got.Status.Capacity.Cmp(resource.MustParse("25Gi"))).To(Equal(0),
+				"capacity is the actual capacity, not the requested 20Gi")
+		})
+
+		It("clears the projected claim when the recorded PVC goes missing", func() {
+			createRequest()
+			provision()
+			bind("20Gi")
+			reconcileOnce()
+			removePVC()
+
+			reconcileOnce()
+
+			got := expectProblem(storagev1alpha1.ReasonPVCMissing)
+			Expect(got.Status.PVCPhase).To(BeEmpty())
+			Expect(got.Status.VolumeName).To(BeEmpty())
+			Expect(got.Status.Capacity).To(BeNil())
+		})
+
+		It("never projects a same-name PVC that fails the identity check", func() {
+			createRequest()
+			createForeignPVC("")
+			pvc := getPVC()
+			pvc.Status.Phase = corev1.ClaimBound
+			pvc.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}
+			Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+
+			reconcileOnce() // finalizer
+			reconcileOnce()
+
+			got := expectProblem(storagev1alpha1.ReasonPVCNameConflict)
+			Expect(got.Status.PVCPhase).To(BeEmpty())
+			Expect(got.Status.Capacity).To(BeNil())
+		})
+
+		It("keeps Ready false while Kubernetes reports a resize in progress", func() {
+			createRequest()
+			provision()
+			bind("20Gi")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.Conditions = []corev1.PersistentVolumeClaimCondition{{
+					Type: corev1.PersistentVolumeClaimFileSystemResizePending, Status: corev1.ConditionTrue,
+				}}
+			})
+
+			reconcileOnce()
+
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizing)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+		})
+
+		It("reports ResizeFailed for a terminal resize failure", func() {
+			createRequest()
+			provision()
+			bind("10Gi")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = map[corev1.ResourceName]corev1.ClaimResourceStatus{
+					corev1.ResourceStorage: corev1.PersistentVolumeClaimControllerResizeInfeasible,
+				}
+			})
+
+			reconcileOnce()
+
+			expectProblem(storagev1alpha1.ReasonResizeFailed)
+		})
+
+		It("preserves the Ready transition time when only the reason changes", func() {
+			createRequest()
+			provision()
+			before := meta.FindStatusCondition(getRequest().Status.Conditions, storagev1alpha1.ConditionReady)
+			Expect(before.Reason).To(Equal(storagev1alpha1.ReasonProvisioning))
+
+			bind("10Gi") // below the requested 20Gi: still Ready=False
+			reconcileOnce()
+
+			after := meta.FindStatusCondition(getRequest().Status.Conditions, storagev1alpha1.ConditionReady)
+			Expect(after.Reason).To(Equal(storagev1alpha1.ReasonResizing))
+			Expect(after.LastTransitionTime).To(Equal(before.LastTransitionTime))
+		})
+
+		It("emits one Event per transition and none for an unchanged state", func() {
+			createRequest()
+			provision()
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Normal PVCRequested ")),
+				"creating the PVC; Provisioning itself has no Event")
+
+			reconcileOnce()
+			Expect(drainEvents()).To(BeEmpty(), "nothing changed")
+
+			bind("20Gi")
+			reconcileOnce()
+			reconcileOnce()
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Normal PVCBound ")))
+
+			removePVC()
+			reconcileOnce()
+			reconcileOnce()
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning PVCMissing ")))
+		})
+
+		It("emits a Warning for an ownership conflict once, not on every reconcile", func() {
+			createRequest()
+			createForeignPVC("")
+			reconcileOnce() // finalizer
+
+			reconcileOnce()
+			reconcileOnce()
+
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning PVCNameConflict ")))
+		})
+
+		It("emits no Event when the status write is rejected", func() {
+			createRequest()
+			provision()
+			drainEvents()
+			bind("20Gi")
+			failStatus := interceptor.NewClient(k8sClient, interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+					patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					return errInjected
+				},
+			})
+
+			_, err := reconcileWith(failStatus)
+
+			Expect(err).To(MatchError(errInjected))
+			Expect(drainEvents()).To(BeEmpty())
 		})
 	})
 

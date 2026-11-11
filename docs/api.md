@@ -69,7 +69,11 @@ Expected machine-readable reasons include:
 - `InvalidSpec` (the spec failed the controller's defensive validation; no PVC was created or changed)
 - `AsExpected` (the `Degraded=False` reason when no problem is detected)
 
-The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`.
+The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `Resizing`, `ResizeFailed`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`. `Resizing` and `ResizeFailed` are observed from the PVC; the controller does not resize claims until milestone 5.
+
+## Events
+
+The controller publishes events.k8s.io/v1 Events on the `StorageRequest`, once per state transition: `PVCRequested` when it creates the PVC, `PVCBound` and `PVCResizing` (Normal) when the request enters those states, and a Warning whose reason is the condition reason when it enters a problem state (for example `PVCMissing` or `OwnershipMismatch`).
 
 A request for a smaller size than an already provisioned PVC may remain usable: `Ready` can remain true when actual capacity still satisfies the request, while `Degraded=True` explains that shrinking is unsupported and the existing claim was left unchanged.
 
