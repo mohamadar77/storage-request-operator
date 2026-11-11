@@ -19,7 +19,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
-- Docs: aligned `FILE-INDEX.md`, the README status note, and the design's reason list, project layout, and RBAC table with the implementation (editorial; no contract change).
+- Docs: rewrote `FILE-INDEX.md` to map the actual repository and updated the README status note.
 
 ### Not yet implemented
 
