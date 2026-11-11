@@ -12,10 +12,12 @@ A map of the repository. The approved design at `docs/design.md` is the canonica
 - `internal/controller/storagerequest_controller.go` — reconciliation logic
 - `internal/storage/pvc_builder.go` — deterministic desired-PVC builder
 - `internal/storage/identity.go` — request-UID and PVC-UID identity check
+- `internal/storage/resize.go` — read-only observation of PVC resize state
+- `internal/conditions/conditions.go` — Ready/Degraded assessment and status projection of a verified PVC
 
 ## Tests
 
-- `api/v1alpha1/validation_test.go`, `internal/storage/*_test.go` — unit tests
+- `api/v1alpha1/validation_test.go`, `internal/storage/*_test.go`, `internal/conditions/*_test.go` — unit tests
 - `internal/controller/*_test.go` — controller tests against envtest
 - `test/integration/` — CRD schema, CEL, defaults, and status subresource tests against envtest
 - `test/e2e/`, `test/utils/` — kind-based end-to-end suite (build tag `e2e`)
