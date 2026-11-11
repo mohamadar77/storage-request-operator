@@ -67,16 +67,25 @@ Milestone 4 notes:
 
 ## Milestone 5 — Safe updates and resize
 
-- [ ] Detect immutable StorageClass, access mode, and volume mode changes without replacing PVCs.
-- [ ] Compare quantities with `resource.Quantity.Cmp`.
-- [ ] Support initial size changes while a PVC is still unbound as specified by design v1.1.
-- [ ] For bound PVC expansion, verify the resolved StorageClass and `allowVolumeExpansion: true`.
-- [ ] Patch only `PVC.spec.resources.requests.storage`.
-- [ ] Implement the narrow terminal failed-resize target recovery rule.
-- [ ] Reject all other decreases and all recovery targets at or below actual capacity.
-- [ ] Keep `Ready=False` while capacity is below target or resize work is pending/in progress.
-- [ ] Surface terminal resize failure without repeatedly re-patching the same target.
-- [ ] Test quantity equivalence, recovery boundaries, unsupported classes, and status conditions.
+- [x] Detect immutable StorageClass, access mode, and volume mode changes without replacing PVCs.
+- [x] Compare quantities with `resource.Quantity.Cmp`.
+- [x] Support initial size changes while a PVC is still unbound as specified by design v1.1.
+- [x] For bound PVC expansion, verify the resolved StorageClass and `allowVolumeExpansion: true`.
+- [x] Patch only `PVC.spec.resources.requests.storage`.
+- [x] Implement the narrow terminal failed-resize target recovery rule.
+- [x] Reject all other decreases and all recovery targets at or below actual capacity.
+- [x] Keep `Ready=False` while capacity is below target or resize work is pending/in progress.
+- [x] Surface terminal resize failure without repeatedly re-patching the same target.
+- [x] Test quantity equivalence, recovery boundaries, unsupported classes, and status conditions.
+
+Milestone 5 notes:
+
+- Immutable-field and resize logic is pure and lives in `internal/storage/pvc_validation.go` (`CheckImmutableFields`) and `internal/storage/resize.go` (`PlanResize`), as laid out in design section 9.1. The controller patches only `PVC.spec.resources.requests.storage`, with the claim's resourceVersion as an optimistic lock, and never replaces a claim.
+- `CheckImmutableFields` compares StorageClass, access modes (as a set), and volume mode, applying the same defaults the builder uses. An omitted `spec.storage.storageClassName` matches any class the claim has, so Kubernetes retroactive default assignment is not a change. Every differing field is named in one `ImmutableFieldChange` message; nothing is patched.
+- `PlanResize` is grow-only. A larger size on an unbound claim is deferred (Kubernetes rejects a request change on an unbound PVC) and applied once bound. A larger size on a bound claim requires the resolved StorageClass to set `allowVolumeExpansion: true`, else `ExpansionNotSupported` or `StorageClassNotFound`; it then patches only the storage request. The StorageClass is read live (not cached) and only when a resize is actually pending, so steady-state reconciles read no StorageClass.
+- A decrease is rejected (`ShrinkNotSupported`) unless it is the design 6.4 recovery: the claim is bound, Kubernetes reports a terminal resize failure (`*ResizeInfeasible`, or the alpha `*ResizeFailed` names), the actual capacity is known, and the new target is strictly above it. A lower target without a terminal failure is `ResizeRecoveryRejected`. Recovery still requires expansion to be allowed.
+- A rejected size change or a changed immutable field is a `Degraded=True` problem layered on the claim assessment: `Ready` keeps the claim's own state, so a claim that still satisfies the request stays `Ready=True` while `Degraded` explains the refusal (design section 4.4).
+
 
 ## Milestone 6 — Finalization
 

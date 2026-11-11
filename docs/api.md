@@ -69,7 +69,7 @@ Expected machine-readable reasons include:
 - `InvalidSpec` (the spec failed the controller's defensive validation; no PVC was created or changed)
 - `AsExpected` (the `Degraded=False` reason when no problem is detected)
 
-The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `Resizing`, `ResizeFailed`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`. `Resizing` and `ResizeFailed` are observed from the PVC; the controller does not resize claims until milestone 5.
+The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons implemented so far: `Provisioning`, `Bound`, `Resizing`, `ResizeFailed`, `VolumeLost`, `PVCNameConflict`, `OwnershipMismatch`, `PVCMissing`, `PVCDeleting`, `InvalidSpec`, `AsExpected`. `ImmutableFieldChange`, `ShrinkNotSupported`, `ResizeRecoveryRejected`, `ExpansionNotSupported`, and `StorageClassNotFound` are reported by milestone 5 when a spec change cannot be applied to the claim.
 
 ## Events
 

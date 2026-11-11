@@ -22,8 +22,16 @@ import (
 	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	storagev1alpha1 "github.com/mohamadar77/storage-request-operator/api/v1alpha1"
+)
+
+const (
+	size30Gi = "30Gi"
+	size15Gi = "15Gi"
 )
 
 // boundClaim builds a bound 1Gi PVC fixture.
@@ -204,6 +212,103 @@ func TestTruncate(t *testing.T) {
 			}
 			if len(got) > tt.limit || !utf8.ValidString(got) {
 				t.Fatalf("Truncate(%q, %d) = %q: %d bytes, valid UTF-8 %v", tt.in, tt.limit, got, len(got), utf8.ValidString(got))
+			}
+		})
+	}
+}
+
+func TestPlanResize(t *testing.T) {
+	request := func(size string) *storagev1alpha1.StorageRequest {
+		return &storagev1alpha1.StorageRequest{Spec: storagev1alpha1.StorageRequestSpec{
+			Storage: storagev1alpha1.StorageSpec{Size: resource.MustParse(size)},
+		}}
+	}
+	// claim builds a PVC requesting 20Gi in StorageClass class ("" for none),
+	// with the given phase and actual capacity ("" for none).
+	claim := func(class string, phase corev1.PersistentVolumeClaimPhase, capacity string) *corev1.PersistentVolumeClaim {
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "app-data"},
+			Spec: corev1.PersistentVolumeClaimSpec{Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")},
+			}},
+			Status: corev1.PersistentVolumeClaimStatus{Phase: phase},
+		}
+		if class != "" {
+			pvc.Spec.StorageClassName = &class
+		}
+		if capacity != "" {
+			pvc.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)}
+		}
+		return pvc
+	}
+	terminating := claim("fast", corev1.ClaimBound, "20Gi")
+	terminating.DeletionTimestamp = new(metav1.Now())
+	class := func(allow *bool) *storagev1.StorageClass {
+		return &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "fast"}, AllowVolumeExpansion: allow}
+	}
+	allow, disallow := class(new(true)), class(nil)
+	failed := func(c *corev1.PersistentVolumeClaim) *corev1.PersistentVolumeClaim {
+		return withAllocated(c, corev1.PersistentVolumeClaimControllerResizeInfeasible)
+	}
+	inProgress := func(c *corev1.PersistentVolumeClaim) *corev1.PersistentVolumeClaim {
+		return withAllocated(c, corev1.PersistentVolumeClaimNodeResizeInProgress)
+	}
+
+	tests := []struct {
+		name       string
+		size       string
+		pvc        *corev1.PersistentVolumeClaim
+		class      *storagev1.StorageClass
+		needsClass bool
+		want       ResizeAction
+		target     string
+		reason     string
+	}{
+		{name: "equal request is a no-op", size: "20Gi", pvc: claim("fast", corev1.ClaimBound, "20Gi"), class: allow, want: ResizeNoop},
+		{name: "equivalent quantity formats are equal", size: "20480Mi", pvc: claim("fast", corev1.ClaimBound, "20Gi"), class: allow, want: ResizeNoop},
+		{name: "terminating claim is never changed", size: size30Gi, pvc: terminating, class: allow, want: ResizeNoop},
+		{name: "lost claim is never changed", size: size30Gi, pvc: claim("fast", corev1.ClaimLost, ""), class: allow, want: ResizeNoop},
+		{name: "unbound increase is deferred", size: size30Gi, pvc: claim("fast", corev1.ClaimPending, ""), want: ResizeDeferred},
+		{name: "unbound decrease is a shrink", size: "10Gi", pvc: claim("fast", corev1.ClaimPending, ""), want: ResizeRejected, reason: storagev1alpha1.ReasonShrinkNotSupported},
+		{name: "bound increase with expansion allowed is patched", size: size30Gi, pvc: claim("fast", corev1.ClaimBound, "20Gi"), class: allow, needsClass: true, want: ResizePatch, target: size30Gi},
+		{name: "bound increase without a class name", size: size30Gi, pvc: claim("", corev1.ClaimBound, "20Gi"), needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonStorageClassNotFound},
+		{name: "bound increase with a missing class", size: size30Gi, pvc: claim("fast", corev1.ClaimBound, "20Gi"), class: nil, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonStorageClassNotFound},
+		{name: "bound increase with expansion disallowed", size: size30Gi, pvc: claim("fast", corev1.ClaimBound, "20Gi"), class: disallow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonExpansionNotSupported},
+		{name: "decrease without actual capacity", size: size15Gi, pvc: failed(claim("fast", corev1.ClaimBound, "")), class: allow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonShrinkNotSupported},
+		{name: "decrease to the actual capacity", size: "10Gi", pvc: failed(claim("fast", corev1.ClaimBound, "10Gi")), class: allow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonShrinkNotSupported},
+		{name: "decrease below the actual capacity", size: "5Gi", pvc: failed(claim("fast", corev1.ClaimBound, "10Gi")), class: allow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonShrinkNotSupported},
+		{name: "decrease above capacity without a terminal failure", size: size15Gi, pvc: claim("fast", corev1.ClaimBound, "10Gi"), class: allow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonResizeRecoveryRejected},
+		{name: "decrease above capacity while a resize is in progress", size: size15Gi, pvc: inProgress(claim("fast", corev1.ClaimBound, "10Gi")), class: allow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonResizeRecoveryRejected},
+		{name: "recovery to a target above capacity after a terminal failure", size: size15Gi, pvc: failed(claim("fast", corev1.ClaimBound, "10Gi")), class: allow, needsClass: true, want: ResizePatch, target: size15Gi},
+		{name: "recovery with the legacy failure name", size: size15Gi, pvc: withAllocated(claim("fast", corev1.ClaimBound, "10Gi"), "NodeResizeFailed"), class: allow, needsClass: true, want: ResizePatch, target: size15Gi},
+		{name: "recovery still needs expansion allowed", size: size15Gi, pvc: failed(claim("fast", corev1.ClaimBound, "10Gi")), class: disallow, needsClass: true, want: ResizeRejected, reason: storagev1alpha1.ReasonExpansionNotSupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sr := request(tt.size)
+			if got := NeedsStorageClass(sr, tt.pvc); got != tt.needsClass {
+				t.Errorf("NeedsStorageClass() = %v, want %v", got, tt.needsClass)
+			}
+			plan := PlanResize(sr, tt.pvc, tt.class)
+			if plan.Action != tt.want {
+				t.Fatalf("PlanResize().Action = %v, want %v (reason %q, message %q)", plan.Action, tt.want, plan.Reason, plan.Message)
+			}
+			switch tt.want {
+			case ResizePatch:
+				if plan.Target.Cmp(resource.MustParse(tt.target)) != 0 {
+					t.Errorf("target = %s, want %s", plan.Target.String(), tt.target)
+				}
+			case ResizeRejected:
+				if plan.Reason != tt.reason {
+					t.Errorf("reason = %q, want %q", plan.Reason, tt.reason)
+				}
+				if !strings.Contains(plan.Message, "was left requesting 20Gi") {
+					t.Errorf("message %q does not say what the claim was left at", plan.Message)
+				}
+			default:
+				if plan.Reason != "" || plan.Message != "" {
+					t.Errorf("unexpected reason/message %q/%q", plan.Reason, plan.Message)
+				}
 			}
 		})
 	}

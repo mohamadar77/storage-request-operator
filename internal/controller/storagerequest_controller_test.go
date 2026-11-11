@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -185,6 +186,25 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				return got
 			}
 		}
+	}
+	// setPVCStatus applies mutate to the PVC status through the status
+	// subresource, standing in for the Kubernetes storage controllers.
+	setPVCStatus := func(mutate func(*corev1.PersistentVolumeClaimStatus)) *corev1.PersistentVolumeClaim {
+		GinkgoHelper()
+		pvc := getPVC()
+		mutate(&pvc.Status)
+		Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
+		return pvc
+	}
+	bind := func(capacity string) *corev1.PersistentVolumeClaim {
+		GinkgoHelper()
+		pvc := getPVC()
+		pvc.Spec.VolumeName = "pv-" + namespace
+		Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
+		return setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+			status.Phase = corev1.ClaimBound
+			status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)}
+		})
 	}
 	// invalidSpec wraps a reader so every StorageRequest it returns carries an
 	// empty StorageClass, a spec the Go validator rejects and a looser CRD
@@ -827,25 +847,6 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 	})
 
 	Context("status projection, resize state, and events", func() {
-		// setPVCStatus applies mutate to the PVC status through the status
-		// subresource, standing in for the Kubernetes storage controllers.
-		setPVCStatus := func(mutate func(*corev1.PersistentVolumeClaimStatus)) *corev1.PersistentVolumeClaim {
-			GinkgoHelper()
-			pvc := getPVC()
-			mutate(&pvc.Status)
-			Expect(k8sClient.Status().Update(ctx, pvc)).To(Succeed())
-			return pvc
-		}
-		bind := func(capacity string) *corev1.PersistentVolumeClaim {
-			GinkgoHelper()
-			pvc := getPVC()
-			pvc.Spec.VolumeName = "pv-" + namespace
-			Expect(k8sClient.Update(ctx, pvc)).To(Succeed())
-			return setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
-				status.Phase = corev1.ClaimBound
-				status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)}
-			})
-		}
 		It("projects the bound claim's phase, volume, and actual capacity", func() {
 			createRequest()
 			provision()
@@ -998,7 +999,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			Expect(drainEvents()).To(BeEmpty())
 		})
 
-		It("emits PVCBound when Ready becomes true while a resize failure is still reported", func() {
+		It("emits PVCBound when Ready becomes true while Degraded is still reported", func() {
 			createRequest()
 			provision()
 			bind("10Gi")
@@ -1011,6 +1012,8 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			expectProblem(storagev1alpha1.ReasonResizeFailed)
 			drainEvents()
 
+			// Lowering the request to the actual capacity satisfies Ready but
+			// is itself rejected (ShrinkNotSupported), so Degraded stays True.
 			sr := getRequest()
 			sr.Spec.Storage.Size = resource.MustParse("10Gi")
 			Expect(k8sClient.Update(ctx, sr)).To(Succeed())
@@ -1018,8 +1021,8 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 
 			got := getRequest()
 			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
-			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonResizeFailed)
-			Expect(drainEvents()).To(ConsistOf(HavePrefix("Normal PVCBound ")))
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonShrinkNotSupported)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Normal PVCBound "), HavePrefix("Warning ShrinkNotSupported ")))
 		})
 
 		It("truncates a long resize message so the Warning Event is never dropped", func() {
@@ -1101,6 +1104,383 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			_, err := reconcileWith(failStatus)
 
 			Expect(err).To(MatchError(errInjected))
+			Expect(drainEvents()).To(BeEmpty())
+		})
+	})
+
+	Context("safe updates and resize", func() {
+		// createClass creates a cluster-scoped StorageClass for this test and
+		// removes it afterwards. allow is its allowVolumeExpansion.
+		createClass := func(allow *bool) string {
+			GinkgoHelper()
+			sc := &storagev1.StorageClass{
+				ObjectMeta:           metav1.ObjectMeta{Name: namespace + "-class"},
+				Provisioner:          "example.com/test",
+				AllowVolumeExpansion: allow,
+			}
+			Expect(k8sClient.Create(ctx, sc)).To(Succeed())
+			DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, sc))).To(Succeed()) })
+			return sc.Name
+		}
+		createRequestWith := func(mutate func(*storagev1alpha1.StorageSpec)) *storagev1alpha1.StorageRequest {
+			GinkgoHelper()
+			sr := &storagev1alpha1.StorageRequest{
+				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: requestName},
+				Spec: storagev1alpha1.StorageRequestSpec{
+					Storage: storagev1alpha1.StorageSpec{Size: resource.MustParse("20Gi")},
+				},
+			}
+			mutate(&sr.Spec.Storage)
+			Expect(k8sClient.Create(ctx, sr)).To(Succeed())
+			return sr
+		}
+		withClass := func(class string) func(*storagev1alpha1.StorageSpec) {
+			return func(spec *storagev1alpha1.StorageSpec) { spec.StorageClassName = &class }
+		}
+		updateSpec := func(mutate func(*storagev1alpha1.StorageSpec)) {
+			GinkgoHelper()
+			sr := getRequest()
+			mutate(&sr.Spec.Storage)
+			Expect(k8sClient.Update(ctx, sr)).To(Succeed())
+		}
+		setSize := func(size string) {
+			GinkgoHelper()
+			updateSpec(func(spec *storagev1alpha1.StorageSpec) { spec.Size = resource.MustParse(size) })
+		}
+		expectClaimRequest := func(size string) {
+			GinkgoHelper()
+			got := getPVC().Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(got.Cmp(resource.MustParse(size))).To(Equal(0), "claim requests %s, want %s", got.String(), size)
+		}
+		// boundWithClass provisions a bound 20Gi claim in a StorageClass whose
+		// allowVolumeExpansion is allow, reconciled to Ready, with no pending
+		// Events.
+		boundWithClass := func(allow *bool) {
+			GinkgoHelper()
+			createRequestWith(withClass(createClass(allow)))
+			provision()
+			bind("20Gi")
+			reconcileOnce()
+			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			drainEvents()
+		}
+		// failedExpansion provisions a claim requesting 20Gi that is bound
+		// with an actual capacity of 10Gi and the given resize status.
+		failedExpansion := func(allow *bool, resize corev1.ClaimResourceStatus) {
+			GinkgoHelper()
+			createRequestWith(withClass(createClass(allow)))
+			provision()
+			bind("10Gi")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = map[corev1.ResourceName]corev1.ClaimResourceStatus{
+					corev1.ResourceStorage: resize,
+				}
+			})
+			reconcileOnce()
+			drainEvents()
+		}
+
+		It("expands a bound claim whose StorageClass allows expansion, exactly once", func() {
+			boundWithClass(new(true))
+
+			setSize("30Gi")
+			reconcileOnce()
+
+			expectClaimRequest("30Gi")
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizing)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Normal PVCResizing ")))
+
+			before := getPVC().ResourceVersion
+			reconcileOnce()
+			Expect(getPVC().ResourceVersion).To(Equal(before), "the same target is not patched twice")
+			Expect(drainEvents()).To(BeEmpty())
+
+			By("the claim converging")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("30Gi")}
+			})
+			reconcileOnce()
+			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+		})
+
+		It("reports ExpansionNotSupported and leaves the claim when the StorageClass disallows expansion", func() {
+			boundWithClass(nil)
+
+			setSize("30Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			expectProblem(storagev1alpha1.ReasonExpansionNotSupported)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning ExpansionNotSupported ")))
+		})
+
+		It("reports StorageClassNotFound when the claim's StorageClass does not exist", func() {
+			createRequestWith(withClass("does-not-exist-" + namespace))
+			provision()
+			bind("20Gi")
+
+			setSize("30Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			expectProblem(storagev1alpha1.ReasonStorageClassNotFound)
+		})
+
+		It("reports StorageClassNotFound for a bound claim without a StorageClass", func() {
+			createRequest()
+			provision()
+			bind("20Gi")
+
+			setSize("30Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			expectProblem(storagev1alpha1.ReasonStorageClassNotFound)
+		})
+
+		It("defers an increase while the claim is unbound and applies it once bound", func() {
+			createRequestWith(withClass(createClass(new(true))))
+			provision()
+			drainEvents()
+
+			setSize("30Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonProvisioning)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+			Expect(drainEvents()).To(BeEmpty())
+
+			bind("20Gi")
+			reconcileOnce()
+
+			expectClaimRequest("30Gi")
+			expectCondition(getRequest(), storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizing)
+		})
+
+		It("rejects a decrease while the claim is unbound", func() {
+			createRequestWith(withClass(createClass(new(true))))
+			provision()
+
+			setSize("10Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonProvisioning)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonShrinkNotSupported)
+		})
+
+		It("rejects an ordinary shrink of a bound claim and keeps it Ready", func() {
+			boundWithClass(new(true))
+			before := getPVC().ResourceVersion
+
+			setSize("10Gi")
+			reconcileOnce()
+
+			Expect(getPVC().ResourceVersion).To(Equal(before))
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonShrinkNotSupported)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning ShrinkNotSupported ")))
+
+			By("restoring the size")
+			setSize("20Gi")
+			reconcileOnce()
+			expectCondition(getRequest(), storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+		})
+
+		It("lowers a terminally failed expansion target to a value above the actual capacity", func() {
+			failedExpansion(new(true), corev1.PersistentVolumeClaimControllerResizeInfeasible)
+			expectProblem(storagev1alpha1.ReasonResizeFailed)
+
+			setSize("15Gi")
+			reconcileOnce()
+
+			expectClaimRequest("15Gi")
+			// Kubernetes has not reacted yet, so the failure is still reported.
+			expectProblem(storagev1alpha1.ReasonResizeFailed)
+			Expect(drainEvents()).To(BeEmpty())
+
+			By("Kubernetes completing the lower target")
+			setPVCStatus(func(status *corev1.PersistentVolumeClaimStatus) {
+				status.AllocatedResourceStatuses = nil
+				status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("15Gi")}
+			})
+			reconcileOnce()
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+		})
+
+		It("rejects a recovery target that is not above the actual capacity", func() {
+			failedExpansion(new(true), corev1.PersistentVolumeClaimControllerResizeInfeasible)
+
+			setSize("10Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonShrinkNotSupported)
+		})
+
+		It("rejects lowering the target while no terminal failure is reported", func() {
+			failedExpansion(new(true), corev1.PersistentVolumeClaimNodeResizeInProgress)
+
+			setSize("15Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizing)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonResizeRecoveryRejected)
+		})
+
+		It("rejects recovery when the StorageClass disallows expansion", func() {
+			failedExpansion(nil, corev1.PersistentVolumeClaimControllerResizeInfeasible)
+
+			setSize("15Gi")
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+			// Ready keeps the claim assessment (ResizeFailed, capacity below
+			// the request); Degraded reports why the recovery was refused.
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionFalse, storagev1alpha1.ReasonResizeFailed)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonExpansionNotSupported)
+		})
+
+		It("reports ImmutableFieldChange for changed access modes and applies no size change", func() {
+			boundWithClass(new(true))
+			before := getPVC().ResourceVersion
+
+			updateSpec(func(spec *storagev1alpha1.StorageSpec) {
+				spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}
+				spec.Size = resource.MustParse("30Gi")
+			})
+			reconcileOnce()
+
+			Expect(getPVC().ResourceVersion).To(Equal(before), "the claim must not be changed")
+			expectProblem(storagev1alpha1.ReasonImmutableFieldChange)
+			Expect(drainEvents()).To(ConsistOf(HavePrefix("Warning ImmutableFieldChange ")))
+
+			By("reverting the access modes: the size increase is applied")
+			updateSpec(func(spec *storagev1alpha1.StorageSpec) {
+				spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+			})
+			reconcileOnce()
+			expectClaimRequest("30Gi")
+			expectCondition(getRequest(), storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+		})
+
+		It("reports ImmutableFieldChange for a changed volume mode", func() {
+			boundWithClass(new(true))
+
+			updateSpec(func(spec *storagev1alpha1.StorageSpec) {
+				spec.VolumeMode = new(corev1.PersistentVolumeBlock)
+			})
+			reconcileOnce()
+
+			got := getRequest()
+			expectCondition(got, storagev1alpha1.ConditionReady, metav1.ConditionTrue, storagev1alpha1.ReasonBound)
+			expectCondition(got, storagev1alpha1.ConditionDegraded, metav1.ConditionTrue, storagev1alpha1.ReasonImmutableFieldChange)
+			Expect(getPVC().Spec.VolumeMode).To(HaveValue(Equal(corev1.PersistentVolumeFilesystem)))
+		})
+
+		It("reports ImmutableFieldChange for a changed explicit StorageClass", func() {
+			boundWithClass(new(true))
+
+			updateSpec(func(spec *storagev1alpha1.StorageSpec) { spec.StorageClassName = new("other-class") })
+			reconcileOnce()
+
+			degraded := meta.FindStatusCondition(getRequest().Status.Conditions, storagev1alpha1.ConditionDegraded)
+			Expect(degraded.Reason).To(Equal(storagev1alpha1.ReasonImmutableFieldChange))
+			Expect(degraded.Message).To(ContainSubstring(`storageClassName "other-class"`))
+			Expect(degraded.Message).To(ContainSubstring(namespace + "-class"))
+		})
+
+		It("accepts the claim's StorageClass when the request omits it", func() {
+			sr := createRequest() // no class
+			// A claim created with a class, as Kubernetes retroactive
+			// defaulting would leave it, carrying this request's UID.
+			class := "assigned-default"
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace, Name: requestName,
+					Annotations: map[string]string{storagev1alpha1.AnnotationRequestUID: string(sr.UID)},
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					StorageClassName: &class,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+
+			reconcileOnce() // finalizer
+			reconcileOnce() // records the UID
+			reconcileOnce() // verified: compares immutable fields
+
+			expectCondition(getRequest(), storagev1alpha1.ConditionDegraded, metav1.ConditionFalse, storagev1alpha1.ReasonAsExpected)
+		})
+
+		It("changes nothing in the reconcile that records an unrecorded claim", func() {
+			class := createClass(new(true))
+			sr := createRequestWith(withClass(class))
+			// A 1Gi claim created before a crash, bound meanwhile, that the
+			// request has not recorded yet.
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace, Name: requestName,
+					Annotations: map[string]string{storagev1alpha1.AnnotationRequestUID: string(sr.UID)},
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					StorageClassName: &class,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+			bind("1Gi")
+			reconcileOnce() // finalizer
+
+			reconcileOnce()
+
+			Expect(getRequest().Status.PVCUID).To(Equal(pvc.UID))
+			expectClaimRequest("1Gi")
+
+			reconcileOnce()
+
+			expectClaimRequest("20Gi")
+		})
+
+		It("returns the error and leaves status when the claim patch fails", func() {
+			boundWithClass(new(true))
+			before := getRequest()
+			setSize("30Gi")
+			failPatch := interceptor.NewClient(k8sClient, interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch,
+					opts ...client.PatchOption) error {
+					if isPVC(obj) {
+						return errInjected
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			})
+
+			_, err := reconcileWith(failPatch)
+
+			Expect(err).To(MatchError(errInjected))
+			expectClaimRequest("20Gi")
+			Expect(getRequest().Status.Conditions).To(Equal(before.Status.Conditions))
 			Expect(drainEvents()).To(BeEmpty())
 		})
 	})

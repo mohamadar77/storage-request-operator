@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -82,9 +83,13 @@ const maxEventNote = 1024
 //     UID annotation and the recorded PVC UID both match;
 //   - a recorded PVC that disappears is reported, never recreated;
 //   - status reports a PVC's phase, volume, and capacity only after its
-//     identity is verified, and Events are emitted only for state transitions.
+//     identity is verified, and Events are emitted only for state transitions;
+//   - the only field ever changed on a PVC is its storage request, only when
+//     both identity checks pass, and never below the actual capacity; a
+//     changed StorageClass, access mode, or volume mode is reported, and the
+//     claim is never replaced.
 //
-// The controller does not yet change or delete any PVC it did not just create.
+// The controller does not yet delete any PVC.
 type StorageRequestReconciler struct {
 	client.Client
 	// APIReader reads directly from the API server. It is used wherever a PVC
@@ -99,7 +104,8 @@ type StorageRequestReconciler struct {
 
 // +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests/status,verbs=get;patch
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile moves one StorageRequest toward its desired state. It is
@@ -249,7 +255,8 @@ func (r *StorageRequestReconciler) reconcileAbsentPVC(
 
 // reconcileExistingPVC verifies the identity of an existing same-name PVC and
 // reports the result. It records the PVC UID the first time the claim is
-// verified, and it never modifies the PVC.
+// verified. Only a claim that passes both identity checks is ever changed, and
+// then only its storage request (see reconcileClaimSpec).
 func (r *StorageRequestReconciler) reconcileExistingPVC(
 	ctx context.Context, sr *storagev1alpha1.StorageRequest, pvc *corev1.PersistentVolumeClaim,
 ) (ctrl.Result, error) {
@@ -280,6 +287,14 @@ func (r *StorageRequestReconciler) reconcileExistingPVC(
 	// conflict rather than recording a different PVC.
 	terminating := !pvc.DeletionTimestamp.IsZero()
 	health := conditions.AssessClaim(sr, pvc)
+	if identity == storage.IdentityVerified {
+		// An unrecorded claim is only recorded in this reconcile; the status
+		// write below triggers the next one, which may then change the claim.
+		var err error
+		if pvc, health, err = r.reconcileClaimSpec(ctx, sr, pvc, health); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	err := r.patchStatus(ctx, sr, func(status *storagev1alpha1.StorageRequestStatus) {
 		status.PVCName = pvc.Name
 		status.PVCUID = pvc.UID
@@ -296,6 +311,71 @@ func (r *StorageRequestReconciler) reconcileExistingPVC(
 		log.Info("Observed PersistentVolumeClaim deletion while its StorageRequest was active")
 	}
 	return ctrl.Result{RequeueAfter: fallbackRequeue}, nil
+}
+
+// reconcileClaimSpec compares the request's spec with the verified claim and
+// applies the one supported change, a storage request update (design sections
+// 6.3 and 6.4). It returns the claim as it is after any patch and the health
+// to report. A changed immutable field or a rejected size change is reported
+// as a problem on the returned health; nothing is patched then.
+func (r *StorageRequestReconciler) reconcileClaimSpec(
+	ctx context.Context, sr *storagev1alpha1.StorageRequest, pvc *corev1.PersistentVolumeClaim,
+	health conditions.Health,
+) (*corev1.PersistentVolumeClaim, conditions.Health, error) {
+	log := logf.FromContext(ctx)
+	if !pvc.DeletionTimestamp.IsZero() || pvc.Status.Phase == corev1.ClaimLost {
+		// Reported by the claim assessment; a terminating or lost claim is
+		// never changed.
+		return pvc, health, nil
+	}
+
+	if message := storage.CheckImmutableFields(sr, pvc); message != "" {
+		log.Info("StorageRequest changed an immutable field; PersistentVolumeClaim left unchanged")
+		return pvc, health.WithProblem(storagev1alpha1.ReasonImmutableFieldChange, message), nil
+	}
+
+	var class *storagev1.StorageClass
+	if storage.NeedsStorageClass(sr, pvc) && pvc.Spec.StorageClassName != nil && *pvc.Spec.StorageClassName != "" {
+		// Read live rather than through the cache: a StorageClass is read only
+		// around a resize, which does not justify a cluster-wide informer.
+		name := *pvc.Spec.StorageClassName
+		class = &storagev1.StorageClass{}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: name}, class); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return pvc, health, fmt.Errorf("reading StorageClass %s: %w", name, err)
+			}
+			class = nil
+		}
+	}
+
+	plan := storage.PlanResize(sr, pvc, class)
+	switch plan.Action {
+	case storage.ResizeRejected:
+		log.Info("Rejected StorageRequest size change; PersistentVolumeClaim left unchanged", "reason", plan.Reason)
+		return pvc, health.WithProblem(plan.Reason, plan.Message), nil
+	case storage.ResizeDeferred:
+		log.Info("Deferred PersistentVolumeClaim size increase until the claim is bound",
+			"requested", sr.Spec.Storage.Size.String())
+		return pvc, health, nil
+	case storage.ResizePatch:
+		// The cached object is never mutated; the patch is computed between a
+		// copy and the desired state, with the claim's resourceVersion as the
+		// optimistic lock so a concurrent change rejects it.
+		base := pvc.DeepCopy()
+		desired := pvc.DeepCopy()
+		if desired.Spec.Resources.Requests == nil {
+			desired.Spec.Resources.Requests = corev1.ResourceList{}
+		}
+		desired.Spec.Resources.Requests[corev1.ResourceStorage] = plan.Target
+		patch := client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+		if err := r.Patch(ctx, desired, patch); err != nil {
+			return pvc, health, fmt.Errorf("patching PersistentVolumeClaim storage request: %w", err)
+		}
+		log.Info("Patched PersistentVolumeClaim storage request",
+			"from", base.Spec.Resources.Requests.Storage().String(), "to", plan.Target.String())
+		return desired, conditions.AssessClaim(sr, desired), nil
+	}
+	return pvc, health, nil
 }
 
 // reportMissing reports that the recorded PVC no longer exists. Callers must

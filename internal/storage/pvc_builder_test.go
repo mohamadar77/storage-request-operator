@@ -29,6 +29,7 @@ import (
 )
 
 const (
+	testName       = "app-data"
 	testRequestUID = types.UID("11111111-1111-1111-1111-111111111111")
 	testPVCUID     = types.UID("22222222-2222-2222-2222-222222222222")
 	otherUID       = types.UID("33333333-3333-3333-3333-333333333333")
@@ -38,7 +39,7 @@ func testRequest(mutate func(*storagev1alpha1.StorageRequest)) *storagev1alpha1.
 	sr := &storagev1alpha1.StorageRequest{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   "team-a",
-			Name:        "app-data",
+			Name:        testName,
 			UID:         testRequestUID,
 			Labels:      map[string]string{"user-label": "must-not-be-copied"},
 			Annotations: map[string]string{"user-annotation": "must-not-be-copied"},
@@ -66,7 +67,7 @@ func TestBuildPVC(t *testing.T) {
 	})
 	pvc := BuildPVC(sr)
 
-	if pvc.Namespace != "team-a" || pvc.Name != "app-data" {
+	if pvc.Namespace != "team-a" || pvc.Name != testName {
 		t.Errorf("namespace/name: got %s/%s, want team-a/app-data", pvc.Namespace, pvc.Name)
 	}
 	wantLabels := map[string]string{

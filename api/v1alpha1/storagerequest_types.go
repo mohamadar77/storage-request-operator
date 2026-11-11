@@ -79,6 +79,24 @@ const (
 	// ReasonResizeFailed: Kubernetes reports a terminal (infeasible) resize
 	// failure for the managed PVC.
 	ReasonResizeFailed = "ResizeFailed"
+	// ReasonImmutableFieldChange: the request changed the StorageClass, access
+	// modes, or volume mode after the PVC was created. The claim is not
+	// replaced or changed.
+	ReasonImmutableFieldChange = "ImmutableFieldChange"
+	// ReasonShrinkNotSupported: the request asks for less than the claim
+	// requests and the failed-resize recovery rule does not apply. The volume
+	// is never shrunk.
+	ReasonShrinkNotSupported = "ShrinkNotSupported"
+	// ReasonResizeRecoveryRejected: the request lowers a pending resize target
+	// above the actual capacity, but Kubernetes reports no terminal resize
+	// failure for the claim.
+	ReasonResizeRecoveryRejected = "ResizeRecoveryRejected"
+	// ReasonExpansionNotSupported: the claim's StorageClass does not allow
+	// volume expansion, so the larger size was not applied.
+	ReasonExpansionNotSupported = "ExpansionNotSupported"
+	// ReasonStorageClassNotFound: the claim's StorageClass could not be
+	// resolved, so expansion could not be verified and was not applied.
+	ReasonStorageClassNotFound = "StorageClassNotFound"
 	// ReasonVolumeLost: the managed PVC reports phase Lost.
 	ReasonVolumeLost = "VolumeLost"
 	// ReasonPVCNameConflict: a PVC with the expected name exists but is not

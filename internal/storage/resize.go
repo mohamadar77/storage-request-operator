@@ -22,6 +22,10 @@ import (
 	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	storagev1alpha1 "github.com/mohamadar77/storage-request-operator/api/v1alpha1"
 )
 
 // ResizeState is what the PVC reports about volume expansion. It is read-only
@@ -132,4 +136,127 @@ func Truncate(s string, limit int) string {
 		cut--
 	}
 	return s[:cut] + ellipsis
+}
+
+// ResizeAction is what PlanResize decided about the claim's storage request.
+type ResizeAction int
+
+const (
+	// ResizeNoop means the claim's request already matches, or the claim is
+	// in a state (terminating, Lost) that is reported elsewhere.
+	ResizeNoop ResizeAction = iota
+	// ResizePatch means the claim's storage request must be patched to Target.
+	ResizePatch
+	// ResizeDeferred means the larger size cannot be applied yet: Kubernetes
+	// accepts a request change only on a bound claim. The increase is applied
+	// once the claim is bound.
+	ResizeDeferred
+	// ResizeRejected means the size change is not applied, and Reason/Message
+	// explain why in a Degraded condition.
+	ResizeRejected
+)
+
+// ResizePlan is PlanResize's decision. Target is set for ResizePatch; Reason
+// and Message are set for ResizeRejected.
+type ResizePlan struct {
+	Action  ResizeAction
+	Target  resource.Quantity
+	Reason  string
+	Message string
+}
+
+// NeedsStorageClass reports whether PlanResize needs the claim's StorageClass
+// to decide: the claim is bound, not terminating, and its storage request
+// differs from the requested size. Callers resolve the class only then, so a
+// request in steady state costs no StorageClass read.
+func NeedsStorageClass(sr *storagev1alpha1.StorageRequest, pvc *corev1.PersistentVolumeClaim) bool {
+	if pvc.Status.Phase != corev1.ClaimBound || !pvc.DeletionTimestamp.IsZero() {
+		return false
+	}
+	return sr.Spec.Storage.Size.Cmp(claimRequest(pvc)) != 0
+}
+
+// claimRequest returns the claim's storage request, zero when absent.
+func claimRequest(pvc *corev1.PersistentVolumeClaim) resource.Quantity {
+	return pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+}
+
+// PlanResize decides whether the verified claim's storage request should be
+// patched toward the requested size (design section 6.4). It never shrinks the
+// actual volume: a decrease is applied only as recovery from a terminal
+// expansion failure, to a target still above the actual capacity. class is the
+// claim's resolved StorageClass, nil when it does not exist; it is consulted
+// only when NeedsStorageClass is true. The caller must have validated sr.
+func PlanResize(
+	sr *storagev1alpha1.StorageRequest, pvc *corev1.PersistentVolumeClaim, class *storagev1.StorageClass,
+) ResizePlan {
+	requested := sr.Spec.Storage.Size
+	current := claimRequest(pvc)
+	cmp := requested.Cmp(current)
+	if cmp == 0 || !pvc.DeletionTimestamp.IsZero() || pvc.Status.Phase == corev1.ClaimLost {
+		return ResizePlan{Action: ResizeNoop}
+	}
+	reject := func(reason, format string, args ...any) ResizePlan {
+		return ResizePlan{Action: ResizeRejected, Reason: reason, Message: fmt.Sprintf(format, args...) +
+			fmt.Sprintf(". PersistentVolumeClaim %s was left requesting %s", pvc.Name, current.String())}
+	}
+
+	if pvc.Status.Phase != corev1.ClaimBound {
+		if cmp > 0 {
+			return ResizePlan{Action: ResizeDeferred}
+		}
+		return reject(storagev1alpha1.ReasonShrinkNotSupported,
+			"The requested size %s is below the claim's request and the claim is not bound; "+
+				"a request is never reduced before provisioning", requested.String())
+	}
+
+	if cmp > 0 {
+		if reason, message := checkExpansion(pvc, class); reason != "" {
+			return reject(reason, "%s", message)
+		}
+		return ResizePlan{Action: ResizePatch, Target: requested.DeepCopy()}
+	}
+
+	// A decrease on a bound claim: only the failed-expansion recovery rule.
+	capacity, hasCapacity := pvc.Status.Capacity[corev1.ResourceStorage]
+	switch state, evidence := ObserveResize(pvc); {
+	case !hasCapacity:
+		return reject(storagev1alpha1.ReasonShrinkNotSupported,
+			"The requested size %s is below the claim's request and the claim reports no actual capacity; "+
+				"the volume is never shrunk", requested.String())
+	case requested.Cmp(capacity) <= 0:
+		return reject(storagev1alpha1.ReasonShrinkNotSupported,
+			"The requested size %s is not above the actual capacity %s; the volume is never shrunk",
+			requested.String(), capacity.String())
+	case state != ResizeFailed:
+		detail := "no resize work"
+		if evidence != "" {
+			detail = evidence
+		}
+		return reject(storagev1alpha1.ReasonResizeRecoveryRejected,
+			"The requested size %s lowers the pending resize target, which is allowed only after Kubernetes "+
+				"reports a terminal resize failure; it reports %s", requested.String(), detail)
+	}
+	if reason, message := checkExpansion(pvc, class); reason != "" {
+		return reject(reason, "%s", message)
+	}
+	return ResizePlan{Action: ResizePatch, Target: requested.DeepCopy()}
+}
+
+// checkExpansion verifies that the claim's StorageClass allows volume
+// expansion. It returns the Degraded reason and message when it does not.
+func checkExpansion(pvc *corev1.PersistentVolumeClaim, class *storagev1.StorageClass) (string, string) {
+	name := claimStorageClass(pvc)
+	switch {
+	case name == "":
+		return storagev1alpha1.ReasonStorageClassNotFound,
+			"The claim has no StorageClass, so volume expansion cannot be verified"
+	case class == nil:
+		return storagev1alpha1.ReasonStorageClassNotFound,
+			fmt.Sprintf("StorageClass %q of the claim does not exist, so volume expansion cannot be verified", name)
+	case class.AllowVolumeExpansion == nil || !*class.AllowVolumeExpansion:
+		return storagev1alpha1.ReasonExpansionNotSupported,
+			fmt.Sprintf("StorageClass %q does not allow volume expansion (allowVolumeExpansion is not true)", name)
+	}
+	return "", ""
 }
