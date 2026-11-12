@@ -37,11 +37,21 @@ By default the manager caches and watches **all** namespaces, so its cache holds
 every managed PVC in the cluster. To restrict it:
 
 - Pass `--watch-namespaces=ns-a,ns-b`. The informer cache is then limited to
-  those namespaces (design §11), which lowers memory use and the blast radius.
-- Bind the manager's permissions with namespaced `RoleBinding`s in those
-  namespaces instead of the cluster-wide `ClusterRoleBinding`, **except**
-  `storageclasses` `get`, which must stay a `ClusterRole` binding because
-  StorageClasses are cluster-scoped.
+  those namespaces (design §11), which lowers memory use. This alone scopes the
+  cache and watches and works with the default install; it does not change RBAC.
+- To also tighten RBAC to those namespaces, split the bundled `manager-role`
+  (`config/rbac/role.yaml` + `role_binding.yaml`), which the default manifests
+  ship as one `ClusterRole` bound cluster-wide:
+  - Bind the namespaced rules (`persistentvolumeclaims`, `storagerequests`,
+    `storagerequests/status`, `events`) as a `Role`/`RoleBinding` in each
+    watched namespace.
+  - Keep `storageclasses` `get` as a `ClusterRole`/`ClusterRoleBinding`, because
+    StorageClasses are cluster-scoped.
+
+  The repository does not ship these namespaced binding manifests; create them
+  for a namespace-scoped install. The `--watch-namespaces` flag does not require
+  them — without them the manager simply keeps the (over-permissioned) default
+  cluster-wide binding.
 
 Leave `--watch-namespaces` empty for a cluster-wide install (the default
 manifests), and size resources accordingly (below).
@@ -66,8 +76,10 @@ manifests), and size resources accordingly (below).
 - Metrics are served securely by default (`--metrics-secure=true`) behind
   authentication/authorization (`filters.WithAuthenticationAndAuthorization`);
   restrict access to monitoring components with the metrics roles and the
-  provided `NetworkPolicy`. HTTP/2 is disabled on the metrics and webhook
-  servers to avoid the Rapid Reset / Stream Cancellation CVEs.
+  provided opt-in `NetworkPolicy` (it is not applied by default; enable it by
+  uncommenting `../network-policy` in `config/default/kustomization.yaml`).
+  HTTP/2 is disabled on the metrics and webhook servers to avoid the Rapid Reset
+  / Stream Cancellation CVEs.
 - Only controller-runtime's standard reconcile metrics are exposed. Object
   identity (request/PVC names, UIDs, namespaces) is never used as a metric
   label; it goes to logs and Events instead, to avoid high-cardinality metrics

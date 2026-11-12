@@ -17,8 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"reflect"
 	"slices"
 	"testing"
+
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 )
 
 const (
@@ -37,7 +40,7 @@ func TestWatchNamespaceConfig(t *testing.T) {
 		{name: "single namespace", in: nsA, want: []string{nsA}},
 		{name: "multiple namespaces", in: nsA + "," + nsB, want: []string{nsA, nsB}},
 		{name: "trims spaces and drops blanks", in: " " + nsA + " , , " + nsB + " ", want: []string{nsA, nsB}},
-		{name: "deduplicates", in: nsA + "," + nsA, want: []string{nsA}},
+		{name: "deduplicates after trimming", in: " " + nsA + " ," + nsA + "," + nsB, want: []string{nsA, nsB}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,8 +52,11 @@ func TestWatchNamespaceConfig(t *testing.T) {
 				return
 			}
 			keys := make([]string, 0, len(got))
-			for k := range got {
+			for k, cfg := range got {
 				keys = append(keys, k)
+				if !reflect.DeepEqual(cfg, cache.Config{}) {
+					t.Errorf("watchNamespaceConfig(%q)[%q] = %+v, want the zero cache.Config (whole-namespace)", tt.in, k, cfg)
+				}
 			}
 			slices.Sort(keys)
 			if !slices.Equal(keys, tt.want) {
