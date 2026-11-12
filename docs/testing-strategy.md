@@ -58,10 +58,12 @@ manager image, deploys the operator, and runs the specs. It needs Docker and
 `test/e2e/storagerequest_test.go` covers the StorageRequest lifecycle: create →
 `Bound` → `Ready=True`, marker-file persistence across two pods (steps 1–3),
 ordinary-shrink rejection (step 6), and Retain/Delete finalization (steps 8–9).
-Environment variables:
+Binding is driven by a consumer pod, so a `WaitForFirstConsumer` StorageClass
+(the Kind default) works without extra configuration. Environment variables:
 
 - `E2E_STORAGE_CLASS` — the StorageClass for the lifecycle tests. Empty uses the
-  cluster default (on Kind, the local-path provisioner).
+  cluster default (on Kind, the local-path provisioner, which is
+  `WaitForFirstConsumer`).
 - `E2E_EXPAND_STORAGE_CLASS` — a StorageClass with `allowVolumeExpansion: true`
   for the expansion test (step 4). The test is skipped when unset, because the
   default Kind provisioner cannot expand; install a CSI driver that supports
