@@ -48,6 +48,31 @@ Use disposable namespaces and storage only:
 10. Test both PV reclaim policies only in isolated test environments and verify backend implications explicitly.
 11. Restart the operator during provisioning, resize, and finalization; verify safe convergence.
 
+### Running the suite
+
+The suite lives in `test/e2e/` behind the `//go:build e2e` tag and runs with
+`make test-e2e`, which creates a disposable Kind cluster, builds and loads the
+manager image, deploys the operator, and runs the specs. It needs Docker and
+`kind`; it does not run under `make test`.
+
+`test/e2e/storagerequest_test.go` covers the StorageRequest lifecycle: create →
+`Bound` → `Ready=True`, marker-file persistence across two pods (steps 1–3),
+ordinary-shrink rejection (step 6), and Retain/Delete finalization (steps 8–9).
+Environment variables:
+
+- `E2E_STORAGE_CLASS` — the StorageClass for the lifecycle tests. Empty uses the
+  cluster default (on Kind, the local-path provisioner).
+- `E2E_EXPAND_STORAGE_CLASS` — a StorageClass with `allowVolumeExpansion: true`
+  for the expansion test (step 4). The test is skipped when unset, because the
+  default Kind provisioner cannot expand; install a CSI driver that supports
+  expansion (for example `csi-driver-host-path`) and point this at its class.
+
+Not yet automated in the suite, pending backend-specific setup: failed-resize
+recovery (step 7, needs a driver that can reproduce a terminal resize failure),
+explicit PV reclaim-policy verification (step 10), and operator-restart
+convergence (step 11). The controller-side behavior of all three is covered by
+the envtest suites; the E2E gaps are tracked in the milestone-8 issues.
+
 ## Acceptance gate
 
 The complete acceptance checklist is in section 12 of `design.md`. All criteria must pass before production deployment. Record the cluster version, OpenShift release where applicable, CSI driver, StorageClass configuration, and test outcome for each E2E matrix entry.

@@ -22,7 +22,7 @@ A map of the repository. The approved design at `docs/design.md` is the canonica
 - `api/v1alpha1/validation_test.go`, `internal/storage/*_test.go`, `internal/conditions/*_test.go` — unit tests
 - `internal/controller/*_test.go` — controller tests against envtest
 - `test/integration/` — CRD schema, CEL, defaults, and status subresource tests against envtest
-- `test/e2e/`, `test/utils/` — kind-based end-to-end suite (build tag `e2e`)
+- `test/e2e/` — Kind-based end-to-end suite (build tag `e2e`): manager deploy/metrics checks plus `storagerequest_test.go` (StorageRequest lifecycle); `test/utils/` — e2e helpers
 
 ## Configuration
 
