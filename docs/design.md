@@ -2,12 +2,12 @@
 
 **Status:** Approved for implementation (v1alpha1)  
 **Document version:** 1.1  
-**API group/version:** `storage.example.io/v1alpha1` (development placeholder)  
+**API group/version:** `storage.base-domain.io/v1alpha1`  
 **Implementation language/framework:** Go, Kubebuilder, controller-runtime  
 **Target platforms:** Kubernetes 1.29+; OpenShift releases whose bundled Kubernetes API is 1.29+ and are included in the project test matrix  
 **Last updated:** 2026-11-09
 
-> **API-domain release gate:** `storage.example.io` is a placeholder. Select a domain controlled by the project and replace the group before the first shared-cluster installation or public CRD release. Changing the API group after consumers create resources is a breaking migration, so do not publish the placeholder group as a stable API.
+> **API group:** the API group is `storage.base-domain.io`, using a domain controlled by the project. Changing the API group after consumers create resources is a breaking migration, so this group is fixed for v1alpha1 and must not be repurposed.
 
 > **Review disposition:** The design is approved to start implementation against this v1alpha1 contract. This is not a production deployment certification. A production release still requires the API-domain decision, an explicit Kubernetes/OpenShift support matrix, deployment/RBAC review, and passing CSI-backed end-to-end tests for every supported storage backend.
 
@@ -111,7 +111,7 @@ A `StorageRequest` represents one storage claim. Its name is also the PVC name. 
 ### 4.2 Example resource
 
 ```yaml
-apiVersion: storage.example.io/v1alpha1
+apiVersion: storage.base-domain.io/v1alpha1
 kind: StorageRequest
 metadata:
   name: app-data
@@ -137,9 +137,9 @@ metadata:
   namespace: demo
   labels:
     app.kubernetes.io/managed-by: storage-request-operator
-    storage.example.io/managed: "true"
+    storage.base-domain.io/managed: "true"
   annotations:
-    storage.example.io/request-uid: "<StorageRequest UID>"
+    storage.base-domain.io/request-uid: "<StorageRequest UID>"
 spec:
   accessModes:
     - ReadWriteOnce
@@ -250,8 +250,8 @@ Do not use status as a second source of truth. The PVC remains authoritative for
 The PVC must carry:
 
 - Label `app.kubernetes.io/managed-by=storage-request-operator`.
-- Label `storage.example.io/managed=true`.
-- Annotation `storage.example.io/request-uid=<StorageRequest UID>`.
+- Label `storage.base-domain.io/managed=true`.
+- Annotation `storage.base-domain.io/request-uid=<StorageRequest UID>`.
 
 The request UID annotation is the request-to-PVC identity marker. Names alone are not sufficient because a `StorageRequest` can be deleted and recreated with the same name but a different UID. The controller also records the PVC object's own UID in `StorageRequest.status.pvcUID`; this detects a same-name PVC replacement after the original claim has been observed. These markers protect against accidental collisions and stale reconciliation, but they are not a cryptographic authorization boundary: namespace RBAC must prevent unauthorized users from forging or modifying managed PVC metadata.
 
@@ -265,7 +265,7 @@ An owner reference would allow Kubernetes garbage collection to delete the PVC i
 
 When a PVC with the expected name already exists:
 
-1. If its `storage.example.io/request-uid` annotation equals the current request UID and `status.pvcUID` is empty, treat it as recovery of a PVC created before a controller restart/status-write failure; record the PVC UID before continuing.
+1. If its `storage.base-domain.io/request-uid` annotation equals the current request UID and `status.pvcUID` is empty, treat it as recovery of a PVC created before a controller restart/status-write failure; record the PVC UID before continuing.
 2. If the annotation is absent or contains another UID, the operator must not adopt, patch, relabel, or delete it.
 3. If `status.pvcUID` is already set and differs from the PVC's UID, treat it as a replacement/collision even if the request annotation was copied; do not adopt or mutate it.
 4. If the request UID annotation and recorded PVC UID both match, the PVC is the exact managed claim and may be reconciled. Operator-owned labels may be repaired only after both identity checks pass.
@@ -354,7 +354,7 @@ The controller must observe PVC changes even though PVCs are not owner-reference
 Recommended controller-runtime setup:
 
 - Primary watch: `StorageRequest` objects.
-- Secondary watch: PVC objects carrying `storage.example.io/managed=true`.
+- Secondary watch: PVC objects carrying `storage.base-domain.io/managed=true`.
 - Mapping: enqueue a `StorageRequest` in the PVC's namespace with the same name.
 - Predicate: process relevant create, update, and delete events when either the old or new PVC carries the managed label/request-UID annotation. In particular, do not filter out label-removal or deletion-timestamp transitions needed for finalization and missing-claim detection.
 - Safety check: reconcile verifies both the PVC request UID annotation and the recorded `status.pvcUID` (when present) before taking action.
@@ -367,7 +367,7 @@ Do not filter out deletion-timestamp changes or finalizer-related updates on the
 
 Deletion is the most sensitive part of this operator. It must be explicit, idempotent, and observable.
 
-The controller uses a finalizer such as `storage.example.io/finalizer`. Kubernetes keeps an object with a finalizer in a terminating state until the responsible controller completes its cleanup and removes the finalizer. See the Kubernetes [Finalizers](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/) documentation.
+The controller uses a finalizer such as `storage.base-domain.io/finalizer`. Kubernetes keeps an object with a finalizer in a terminating state until the responsible controller completes its cleanup and removes the finalizer. See the Kubernetes [Finalizers](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/) documentation.
 
 ### 7.1 `onDelete: Retain` (default)
 
@@ -375,13 +375,13 @@ When the custom resource is deleted:
 
 1. Read the PVC by namespace/name.
 2. Verify its request UID annotation matches the deleting custom resource UID. If `status.pvcUID` is set, also require an exact PVC UID match. If the annotation matches but `status.pvcUID` is empty (the create/status-write recovery case), the observed PVC may be treated as the request's claim.
-3. If identity matches, mark it as retained/orphaned using an annotation such as `storage.example.io/orphaned-from=<request UID>` and remove the active `storage.example.io/managed` label so it is no longer reconciled as an active request.
+3. If identity matches, mark it as retained/orphaned using an annotation such as `storage.base-domain.io/orphaned-from=<request UID>` and remove the active `storage.base-domain.io/managed` label so it is no longer reconciled as an active request.
 4. Do not delete the PVC.
 5. Remove the custom resource finalizer.
 
 The PVC and its bound PV remain available. The user/operator is responsible for the retained claim after the `StorageRequest` is gone.
 
-If the PVC is absent, finalization is already complete. If a same-named PVC exists but has a different or missing request UID, or its UID differs from the recorded `status.pvcUID`, do not modify it; log and emit an event, then complete `Retain` finalization because this request cannot prove ownership. If the PVC already has a deletion timestamp because another actor requested its deletion, `Retain` cannot cancel that API operation; emit a warning event explaining that the claim is already terminating, then complete finalization without claiming that the PVC was retained. A retained PVC is detached from active reconciliation by removing the `storage.example.io/managed` label and adding the orphan annotation.
+If the PVC is absent, finalization is already complete. If a same-named PVC exists but has a different or missing request UID, or its UID differs from the recorded `status.pvcUID`, do not modify it; log and emit an event, then complete `Retain` finalization because this request cannot prove ownership. If the PVC already has a deletion timestamp because another actor requested its deletion, `Retain` cannot cancel that API operation; emit a warning event explaining that the claim is already terminating, then complete finalization without claiming that the PVC was retained. A retained PVC is detached from active reconciliation by removing the `storage.base-domain.io/managed` label and adding the orphan annotation.
 
 ### 7.2 `onDelete: Delete`
 
@@ -739,7 +739,7 @@ The following decisions are now part of the v1alpha1 contract; they are not impl
 | Is an admission webhook required for positive quantity validation? | No for the Kubernetes 1.29+ baseline: use CRD CEL quantity validation and repeat the validation in Go. |
 | What is the minimum platform baseline? | Kubernetes 1.29+. OpenShift releases must meet the same bundled Kubernetes API baseline and pass the operator's CSI-backed test matrix. |
 
-**Only project-specific release gate still open:** replace `storage.example.io` with a domain controlled by the project before publishing or installing the CRD in a shared cluster. This does not block local implementation or unit/envtest work, but it must be resolved before shared-cluster adoption because changing an installed API group is a breaking migration.
+The API-group selection gate is resolved: the group is `storage.base-domain.io`, a domain controlled by the project. It is fixed for v1alpha1; changing an installed API group is a breaking migration, so it must not be repurposed.
 
 ### Approval boundary
 

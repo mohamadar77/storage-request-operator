@@ -3,7 +3,7 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.16.0
-domain: example.io
+domain: base-domain.io
 layout:
 - go.kubebuilder.io/v4
 projectName: storage-request-operator
@@ -13,7 +13,7 @@ resources:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: example.io
+  domain: base-domain.io
   group: storage
   kind: StorageRequest
   path: github.com/mohamadar77/storage-request-operator/api/v1alpha1

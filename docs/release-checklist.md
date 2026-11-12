@@ -4,8 +4,8 @@ Do not publish a shared-cluster or production release until all applicable items
 
 ## API and compatibility
 
-- [ ] Replace `storage.example.io` with a DNS domain controlled by the project before the first shared-cluster installation or public CRD release.
-- [ ] Confirm the API group will not need a breaking rename after consumers exist.
+- [x] API group set to `storage.base-domain.io`, using a domain controlled by the project.
+- [x] API group is fixed for v1alpha1; it will not be renamed after consumers exist (a rename is a breaking migration).
 - [ ] Publish the exact Kubernetes version support matrix (design baseline: 1.29+).
 - [ ] Publish exact OpenShift releases only after validation against bundled Kubernetes APIs and CSI stacks.
 - [ ] Record the supported CSI drivers, StorageClasses, access modes, and expansion behavior.
@@ -36,5 +36,5 @@ Do not publish a shared-cluster or production release until all applicable items
 - [ ] Reclaim-policy implications have been tested only in isolated disposable environments.
 - [ ] CI is green on the release commit.
 - [ ] Changelog and release notes are prepared.
-- [ ] A license is selected and added before public contribution/publication.
+- [x] A license is selected and added: Apache-2.0 (`LICENSE`).
 - [ ] Image provenance, signing, and vulnerability scanning requirements are decided for the release process.

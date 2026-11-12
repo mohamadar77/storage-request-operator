@@ -6,7 +6,7 @@ The normative API contract is [design v1.1](design.md). This page is a reader-fr
 
 - Kind: `StorageRequest`
 - Scope: Namespaced
-- API version: `storage.example.io/v1alpha1` (placeholder group; must be replaced before shared-cluster use)
+- API version: `storage.base-domain.io/v1alpha1`
 - Plural: `storagerequests`
 - One request manages one PVC with the same name in the same namespace.
 - Status subresource: enabled.
@@ -14,7 +14,7 @@ The normative API contract is [design v1.1](design.md). This page is a reader-fr
 ## Example
 
 ```yaml
-apiVersion: storage.example.io/v1alpha1
+apiVersion: storage.base-domain.io/v1alpha1
 kind: StorageRequest
 metadata:
   name: app-data

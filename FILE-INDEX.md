@@ -34,6 +34,7 @@ A map of the repository. The approved design at `docs/design.md` is the canonica
 
 ## Documentation
 
+- `LICENSE` (Apache-2.0)
 - `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `AGENTS.md`
 - `docs/design.md` — approved design (normative)
 - `docs/adr/0001-storage-request-pvc-lifecycle.md`

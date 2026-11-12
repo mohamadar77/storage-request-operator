@@ -23,7 +23,7 @@ rules:
   - create
   - patch
 - apiGroups:
-  - storage.example.io
+  - storage.base-domain.io
   resources:
   - storagerequests
   verbs:
@@ -32,7 +32,7 @@ rules:
   - patch
   - watch
 - apiGroups:
-  - storage.example.io
+  - storage.base-domain.io
   resources:
   - storagerequests/status
   verbs:

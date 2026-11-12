@@ -44,10 +44,10 @@ See [`docs/architecture.md`](docs/architecture.md) for component boundaries, rec
 
 ## API preview
 
-> `storage.example.io` is a development placeholder only. The API group must be replaced with a domain controlled by the project before the CRD is published or installed in a shared cluster. Do not treat this placeholder as a release-ready API identity.
+> The API group is `storage.base-domain.io`, using a domain controlled by the project. It is fixed for v1alpha1: changing an installed API group is a breaking migration, so it must not be repurposed.
 
 ```yaml
-apiVersion: storage.example.io/v1alpha1
+apiVersion: storage.base-domain.io/v1alpha1
 kind: StorageRequest
 metadata:
   name: app-data

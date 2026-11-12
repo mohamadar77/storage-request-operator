@@ -50,7 +50,7 @@ sequenceDiagram
 
 The request-to-child relationship is protected by two identifiers:
 
-1. `storage.example.io/request-uid` on the PVC must equal the current `StorageRequest.metadata.uid`.
+1. `storage.base-domain.io/request-uid` on the PVC must equal the current `StorageRequest.metadata.uid`.
 2. Once observed, `StorageRequest.status.pvcUID` records the PVC object's UID. The recorded UID must continue to match the object.
 
 A name match is insufficient. An absent or mismatched marker is never permission to adopt, mutate, or delete a PVC. These metadata checks are not a cryptographic security boundary; RBAC must prevent unauthorized users from forging the marker or modifying managed PVC metadata.

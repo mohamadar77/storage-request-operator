@@ -57,7 +57,7 @@ Milestone 3 notes:
 
 Milestone 4 notes:
 
-- PVC events pass the watch predicate when the old or new object carries the `storage.example.io/managed=true` label or the request-UID annotation, so label removal, annotation removal, and deletion-timestamp updates still reconcile. `StorageRequest` events are not filtered. The mapping is by namespace and name only; identity is decided in `Reconcile`.
+- PVC events pass the watch predicate when the old or new object carries the `storage.base-domain.io/managed=true` label or the request-UID annotation, so label removal, annotation removal, and deletion-timestamp updates still reconcile. `StorageRequest` events are not filtered. The mapping is by namespace and name only; identity is decided in `Reconcile`.
 - An unmarked same-name PVC does not pass the predicate. Its appearance or removal (for example, a `PVCNameConflict` clearing) is noticed by the 30-second fallback requeue, which every active request keeps.
 - Resize state is observed, not acted on: `Ready=False`, reason `Resizing`, while `status.allocatedResourceStatuses["storage"]` or the PVC resize conditions report pending or in-progress work, or while a bound claim reports less capacity than requested. An infeasible allocated-resource status (or its alpha name `ControllerResizeFailed`/`NodeResizeFailed`) sets `Degraded=True`, reason `ResizeFailed`. The controller still never patches the PVC size; that is Milestone 5.
 - Events are published through the events.k8s.io/v1 API and emitted only after the status write that records a new state succeeds, so each transition yields one Event and a rejected write yields none. Ready and Degraded are judged independently: `PVCBound` when Ready becomes `True`, `PVCResizing` when Ready's reason becomes `Resizing`, and a Warning whose reason is the Degraded reason when Degraded becomes `True` or changes reason. `PVCRequested` is emitted on PVC creation. `OwnershipMismatch`, `VolumeLost`, and `InvalidSpec` Warnings are in addition to the design's Event list.
@@ -101,7 +101,7 @@ Milestone 5 notes:
 Milestone 6 notes:
 
 - Finalization lives in `internal/controller/finalize.go`. The PVC is read live (`APIReader`), never from the cache, because a deletion decision must not act on a stale view. Ownership is proven only when `CheckIdentity` returns `Verified` or `Unrecorded` (request-UID annotation matches, and the recorded PVC UID matches or is not yet recorded). The `onDelete` value is frozen once the request is deleting, so the cached request is authoritative for the policy.
-- `Retain` detaches the owned claim: it adds `storage.example.io/orphaned-from=<request UID>` and removes the active `storage.example.io/managed` label, then removes the finalizer. The claim and its data stay. An unprovable same-name claim is left untouched and finalization still completes (Retain changes nothing anyway); a claim already terminating under another actor gets a warning and is not falsely reported as retained.
+- `Retain` detaches the owned claim: it adds `storage.base-domain.io/orphaned-from=<request UID>` and removes the active `storage.base-domain.io/managed` label, then removes the finalizer. The claim and its data stay. An unprovable same-name claim is left untouched and finalization still completes (Retain changes nothing anyway); a claim already terminating under another actor gets a warning and is not falsely reported as retained.
 - `Delete` deletes only the exact claim, with a `metav1.Preconditions{UID}` so a same-name replacement is never deleted, and keeps the finalizer until the API server confirms the claim is `NotFound`. A claim whose ownership cannot be proven is a safety block: the finalizer is kept (the request stays `Terminating`) for an administrator to resolve, never deleted. PVC protection delaying deletion is waited out, never bypassed.
 - RBAC adds `persistentvolumeclaims` `delete`. Events: `StorageRetained`, `PVCDeletionRequested`, and Warnings (`OwnershipMismatch`, `PVCDeleting`) during finalization.
 - The deletion-time `onDelete` is frozen through the immutable `status.finalizationPolicy` (design section 7.4): the first finalization reconcile records the current policy, and every later reconcile finalizes from the recorded value. CRD CEL cannot read `metadata.deletionTimestamp`, so the freeze lives in status; this closes the window where a concurrent `onDelete` flip (for example GitOps self-heal) could redirect a terminating request to delete a data-bearing claim.
@@ -133,8 +133,8 @@ Milestone 7 notes:
 - [ ] Verify both Retain and Delete with documented PV reclaim policies in isolated environments.
 - [ ] Test operator restarts during provisioning, resizing, and finalization.
 - [ ] Complete the platform support matrix and operational troubleshooting guide.
-- [ ] Replace the placeholder API group before shared-cluster or public CRD release.
-- [ ] Select and add a license before public contribution.
+- [x] Replace the placeholder API group before shared-cluster or public CRD release. (Set to `storage.base-domain.io`.)
+- [x] Select and add a license before public contribution. (Apache-2.0; see `LICENSE`.)
 - [ ] Complete [`release-checklist.md`](release-checklist.md).
 
 ## Definition of done

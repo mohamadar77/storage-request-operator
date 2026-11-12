@@ -189,7 +189,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "8bca80ad.example.io",
+		LeaderElectionID:       "8bca80ad.base-domain.io",
 		// All actions are idempotent and no cleanup runs after the manager
 		// stops, so a leader may step down voluntarily on shutdown. The binary
 		// exits immediately once Start returns (below), which this requires, and

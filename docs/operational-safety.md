@@ -7,8 +7,8 @@ This document highlights the data-safety behaviors in [design v1.1](design.md). 
 The managed PVC must have:
 
 - `app.kubernetes.io/managed-by=storage-request-operator`
-- `storage.example.io/managed=true`
-- `storage.example.io/request-uid=<StorageRequest UID>`
+- `storage.base-domain.io/managed=true`
+- `storage.base-domain.io/request-uid=<StorageRequest UID>`
 
 The request records the exact child object's UID in `status.pvcUID`. Both the request marker and recorded PVC UID must match before an existing PVC is mutated or deleted. Do not use name-only adoption. RBAC must prevent tenants from forging or changing managed metadata.
 
