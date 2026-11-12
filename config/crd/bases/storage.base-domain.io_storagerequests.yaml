@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.22.0
-  name: storagerequests.storage.example.io
+  name: storagerequests.storage.base-domain.io
 spec:
-  group: storage.example.io
+  group: storage.base-domain.io
   names:
     kind: StorageRequest
     listKind: StorageRequestList

@@ -288,10 +288,10 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			pvc := provision()
 
 			Expect(pvc.Labels).To(Equal(map[string]string{
-				"app.kubernetes.io/managed-by": "storage-request-operator",
-				"storage.example.io/managed":   "true",
+				"app.kubernetes.io/managed-by":   "storage-request-operator",
+				"storage.base-domain.io/managed": "true",
 			}))
-			Expect(pvc.Annotations).To(HaveKeyWithValue("storage.example.io/request-uid", string(sr.UID)))
+			Expect(pvc.Annotations).To(HaveKeyWithValue("storage.base-domain.io/request-uid", string(sr.UID)))
 			Expect(pvc.Annotations).NotTo(HaveKey("user-annotation"))
 			Expect(pvc.OwnerReferences).To(BeEmpty(), "the PVC must not have an owner reference")
 			Expect(pvc.Spec.AccessModes).To(Equal([]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}))

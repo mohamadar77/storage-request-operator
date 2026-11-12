@@ -71,13 +71,13 @@ func TestBuildPVC(t *testing.T) {
 		t.Errorf("namespace/name: got %s/%s, want team-a/app-data", pvc.Namespace, pvc.Name)
 	}
 	wantLabels := map[string]string{
-		"app.kubernetes.io/managed-by": "storage-request-operator",
-		"storage.example.io/managed":   "true",
+		"app.kubernetes.io/managed-by":   "storage-request-operator",
+		"storage.base-domain.io/managed": "true",
 	}
 	if !equality.Semantic.DeepEqual(pvc.Labels, wantLabels) {
 		t.Errorf("labels: got %v, want exactly %v", pvc.Labels, wantLabels)
 	}
-	wantAnnotations := map[string]string{"storage.example.io/request-uid": string(testRequestUID)}
+	wantAnnotations := map[string]string{"storage.base-domain.io/request-uid": string(testRequestUID)}
 	if !equality.Semantic.DeepEqual(pvc.Annotations, wantAnnotations) {
 		t.Errorf("annotations: got %v, want exactly %v", pvc.Annotations, wantAnnotations)
 	}

@@ -103,8 +103,8 @@ type StorageRequestReconciler struct {
 	Recorder events.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests,verbs=get;list;watch;patch
-// +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests/status,verbs=get;patch
+// +kubebuilder:rbac:groups=storage.base-domain.io,resources=storagerequests,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=storage.base-domain.io,resources=storagerequests/status,verbs=get;patch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch

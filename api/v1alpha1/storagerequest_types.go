@@ -33,7 +33,7 @@ import (
 const (
 	// Finalizer is the StorageRequest finalizer. It is persisted before any PVC
 	// is created and removed only after the selected deletion policy completes.
-	Finalizer = "storage.example.io/finalizer"
+	Finalizer = "storage.base-domain.io/finalizer"
 
 	// LabelManagedBy is the standard Kubernetes managed-by label applied to the PVC.
 	LabelManagedBy = "app.kubernetes.io/managed-by"
@@ -41,16 +41,16 @@ const (
 	ManagedByValue = "storage-request-operator"
 	// LabelManaged marks a PVC as actively managed by a StorageRequest. It is
 	// removed when a PVC is retained (detached) during finalization.
-	LabelManaged = "storage.example.io/managed"
+	LabelManaged = "storage.base-domain.io/managed"
 	// ManagedValue is the value of LabelManaged on an actively managed PVC.
 	ManagedValue = "true"
 
 	// AnnotationRequestUID records the owning StorageRequest UID on the PVC. A
 	// name match alone never authorizes adoption, mutation, or deletion.
-	AnnotationRequestUID = "storage.example.io/request-uid"
+	AnnotationRequestUID = "storage.base-domain.io/request-uid"
 	// AnnotationOrphanedFrom records the StorageRequest UID a retained PVC was
 	// detached from during Retain finalization.
-	AnnotationOrphanedFrom = "storage.example.io/orphaned-from"
+	AnnotationOrphanedFrom = "storage.base-domain.io/orphaned-from"
 )
 
 // Condition types reported on StorageRequest.status.conditions.

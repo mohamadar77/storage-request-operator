@@ -1,4 +1,4 @@
-apiVersion: storage.example.io/v1alpha1
+apiVersion: storage.base-domain.io/v1alpha1
 kind: StorageRequest
 metadata:
   name: app-data

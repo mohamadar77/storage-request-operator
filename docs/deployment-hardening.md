@@ -6,8 +6,7 @@ operator (milestone 7). The authoritative contract is [`design.md`](design.md)
 is how the shipped manifests and flags realize it.
 
 > The operator is not production-ready until milestones 7 and 8 and the
-> [release checklist](release-checklist.md) are complete, including replacing
-> the placeholder `storage.example.io` API group.
+> [release checklist](release-checklist.md) are complete.
 
 ## Least-privilege RBAC
 
@@ -18,8 +17,8 @@ The generated manager role (`config/rbac/role.yaml`) grants only:
 | `""` (core) | `persistentvolumeclaims` | get, list, watch, create, patch, delete | Create, observe, resize, detach, and delete the managed PVC |
 | `storage.k8s.io` | `storageclasses` | get | Check `allowVolumeExpansion` before a bound-claim resize |
 | `events.k8s.io` | `events` | create, patch | Publish user-visible Events |
-| `storage.example.io` | `storagerequests` | get, list, watch, patch | Read requests and maintain finalizers |
-| `storage.example.io` | `storagerequests/status` | get, patch | Publish status |
+| `storage.base-domain.io` | `storagerequests` | get, list, watch, patch | Read requests and maintain finalizers |
+| `storage.base-domain.io` | `storagerequests/status` | get, patch | Publish status |
 
 It grants **no** access to PersistentVolumes, Pods, Nodes, Secrets,
 `VolumeAttachment`, or any CSI resource (design §10.1). The controller writes
