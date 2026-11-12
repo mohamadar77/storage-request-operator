@@ -49,6 +49,7 @@ Supported access modes are `ReadWriteOnce`, `ReadOnlyMany`, `ReadWriteMany`, and
 | `status.observedGeneration` | Spec generation last processed. |
 | `status.pvcName` | Managed PVC name (same as request name). |
 | `status.pvcUID` | UID of the exact PVC object incarnation; once set, retained for the request lifetime. |
+| `status.finalizationPolicy` | The `onDelete` value captured when finalization began; immutable once set, so a later `onDelete` change cannot redirect deletion. |
 | `status.pvcPhase` | Observed PVC phase (`Pending`, `Bound`, `Lost`) when a PVC exists. |
 | `status.volumeName` | Bound PV name when available. |
 | `status.capacity` | Actual capacity reported by PVC status, not the requested target. |
@@ -73,7 +74,7 @@ The reason constants live in `api/v1alpha1/storagerequest_types.go`. Reasons imp
 
 ## Events
 
-The controller publishes events.k8s.io/v1 Events on the `StorageRequest`, once per state transition: `PVCRequested` when it creates the PVC, `PVCBound` (Normal) when `Ready` becomes `True`, `PVCResizing` (Normal) when the `Ready` reason becomes `Resizing`, and a Warning whose reason is the `Degraded` reason when `Degraded` becomes `True` or changes reason (for example `PVCMissing` or `OwnershipMismatch`). Event notes are truncated to the 1024-byte API limit.
+The controller publishes events.k8s.io/v1 Events on the `StorageRequest`, once per state transition: `PVCRequested` when it creates the PVC, `PVCBound` (Normal) when `Ready` becomes `True`, `PVCResizing` (Normal) when the `Ready` reason becomes `Resizing`, and a Warning whose reason is the `Degraded` reason when `Degraded` becomes `True` or changes reason (for example `PVCMissing` or `OwnershipMismatch`). During finalization it also emits `StorageRetained` (Normal, Retain detached the claim), `PVCDeletionRequested` (Normal, Delete requested the claim's removal), and a Warning (`OwnershipMismatch` or `PVCDeleting`) when the claim cannot be proven owned or is already terminating. Event notes are truncated to the 1024-byte API limit.
 
 A request for a smaller size than an already provisioned PVC may remain usable: `Ready` can remain true when actual capacity still satisfies the request, while `Degraded=True` explains that shrinking is unsupported and the existing claim was left unchanged.
 

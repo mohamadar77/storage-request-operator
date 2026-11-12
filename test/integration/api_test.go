@@ -390,6 +390,55 @@ func TestStatusSubresource(t *testing.T) {
 	}
 }
 
+// TestFinalizationPolicyImmutable verifies status.finalizationPolicy cannot be
+// changed once recorded. It is how the deletion-time onDelete policy is frozen
+// during termination (design section 7.4): the controller records it on the
+// first finalization reconcile, and a later change must be rejected so a flipped
+// spec.lifecycle.onDelete cannot redirect finalization.
+func TestFinalizationPolicyImmutable(t *testing.T) {
+	ctx := context.Background()
+	sr := baseRequest("finalizationpolicy-immutable")
+	if err := k8sClient.Create(ctx, sr); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(ctx, sr) })
+	key := client.ObjectKeyFromObject(sr)
+	fetch := func() *storagev1alpha1.StorageRequest {
+		t.Helper()
+		got := &storagev1alpha1.StorageRequest{}
+		if err := k8sClient.Get(ctx, key, got); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return got
+	}
+
+	obj := fetch()
+	obj.Status.FinalizationPolicy = storagev1alpha1.OnDeleteRetain
+	if err := k8sClient.Status().Update(ctx, obj); err != nil {
+		t.Fatalf("first finalizationPolicy write: %v", err)
+	}
+
+	obj = fetch()
+	obj.Status.FinalizationPolicy = storagev1alpha1.OnDeleteDelete
+	err := k8sClient.Status().Update(ctx, obj)
+	if err == nil {
+		t.Fatal("change finalizationPolicy: expected rejection, got nil")
+	}
+	if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "status.finalizationPolicy is immutable once set") {
+		t.Errorf("change finalizationPolicy: got %v, want the immutability error", err)
+	}
+
+	// Unrelated status writes still succeed while finalizationPolicy is kept.
+	obj = fetch()
+	obj.Status.PVCPhase = corev1.ClaimBound
+	if err := k8sClient.Status().Update(ctx, obj); err != nil {
+		t.Errorf("status update keeping finalizationPolicy: %v", err)
+	}
+	if got := fetch().Status.FinalizationPolicy; got != storagev1alpha1.OnDeleteRetain {
+		t.Errorf("finalizationPolicy after updates: got %q, want Retain", got)
+	}
+}
+
 // TestPVCUIDImmutable verifies status.pvcUID cannot be changed, cleared, or
 // dropped with the whole status once recorded. The recorded UID is the only
 // thing that stops the controller from recreating or adopting a same-name PVC.

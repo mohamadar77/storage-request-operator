@@ -60,6 +60,7 @@ const staleCacheRequeue = time.Second
 const (
 	eventActionReconcile = "Reconcile"
 	eventActionCreate    = "CreatePersistentVolumeClaim"
+	eventActionFinalize  = "Finalize"
 )
 
 // maxEventNote is the events.k8s.io/v1 limit on an Event's note. The API
@@ -104,7 +105,7 @@ type StorageRequestReconciler struct {
 
 // +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=storage.example.io,resources=storagerequests/status,verbs=get;patch
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;patch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
@@ -119,13 +120,11 @@ func (r *StorageRequestReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	ctx = logf.IntoContext(ctx, log)
 
 	if !sr.DeletionTimestamp.IsZero() {
-		// Finalization (Retain/Delete) is implemented in a later milestone.
-		// Until then the finalizer is deliberately left in place: removing it
-		// here would skip the deletion policy the user selected.
-		if controllerutil.ContainsFinalizer(sr, storagev1alpha1.Finalizer) {
-			log.Info("Skipped StorageRequest finalization because it is not implemented yet; finalizer kept")
+		if !controllerutil.ContainsFinalizer(sr, storagev1alpha1.Finalizer) {
+			// Our cleanup already ran, or was never installed: nothing to do.
+			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, nil
+		return r.finalize(ctx, sr)
 	}
 
 	// The finalizer must be persisted before any PVC exists. Persist it and

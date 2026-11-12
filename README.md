@@ -2,7 +2,7 @@
 
 A Kubernetes Operator that manages one `PersistentVolumeClaim` (PVC) for each namespaced `StorageRequest`, with ownership-safe reconciliation, capacity expansion, lifecycle status, and explicit retention behavior.
 
-> **Project status:** Under active implementation against the approved v1alpha1 design. Milestones 1–3 (scaffold, API, PVC creation and identity) are complete; see the roadmap below. The operator is not yet usable outside a disposable test cluster: until finalization (milestone 6) lands, a deleted `StorageRequest` stays in `Terminating`.
+> **Project status:** Under active implementation against the approved v1alpha1 design. Milestones 1–6 are complete (scaffold, API, PVC creation/identity, watches/status/events, safe updates/resize, and Retain/Delete finalization); see the roadmap below. Hardening (milestone 7) and CSI-backed end-to-end tests (milestone 8) remain, so the operator is not yet production-ready: run it only against a disposable test cluster until those milestones and the release checklist are complete.
 
 ## What it does
 
@@ -73,8 +73,8 @@ The API details and status semantics are documented in [`docs/api.md`](docs/api.
 | 2 | API types, defaults, validation, sample manifest | Complete |
 | 3 | PVC builder, finalizer-before-create, identity and collision handling | Complete |
 | 4 | PVC watches, status conditions, events | Complete |
-| 5 | Immutable-field checks, expansion and failed-resize recovery | In progress |
-| 6 | Retain/Delete finalization | Not started |
+| 5 | Immutable-field checks, expansion and failed-resize recovery | Complete |
+| 6 | Retain/Delete finalization | Complete |
 | 7 | RBAC, leader election, probes, metrics, hardening | Not started |
 | 8 | CSI-backed E2E tests, user guide, operational troubleshooting | Not started |
 

@@ -198,6 +198,7 @@ Recommended fields:
 - `observedGeneration`: spec generation last processed by the controller.
 - `pvcName`: name of the managed PVC; included for convenient tooling even though it equals the custom resource name.
 - `pvcUID`: UID of the exact PVC object incarnation first verified as belonging to this request. Once set, it is not cleared during the request's lifetime and is used to detect deletion/recreation or same-name replacement.
+- `finalizationPolicy`: the `onDelete` value captured on the first finalization reconcile. It is immutable once set and is how the deletion-time policy is frozen (see section 7.4): because CRD CEL cannot read `metadata.deletionTimestamp`, the freeze is carried by this status field rather than a transition rule on `onDelete`.
 - `pvcPhase`: current PVC phase (`Pending`, `Bound`, or `Lost`) when a PVC exists. Omit it when the PVC is absent; absence is represented by a condition, not a fabricated PVC phase.
 - `volumeName`: bound PV name, when assigned.
 - `capacity`: actual capacity currently reported by the PVC status, when available; this is not the requested size.
@@ -416,7 +417,7 @@ Never describe `onDelete: Delete` as a guaranteed backend deletion or `onDelete:
 - Never remove another controller's finalizers.
 - Do not provide a normal-operation "force cleanup" switch.
 - Document manual finalizer removal only as an administrator recovery procedure after the PVC/data implications have been understood and handled.
-- `onDelete` is mutable only while the request is active. Once deletionTimestamp is set, the deletion-time policy is fixed and finalization must use that value; do not attempt to change the policy during finalization.
+- `onDelete` is mutable only while the request is active. Once deletionTimestamp is set, the deletion-time policy is fixed and finalization must use that value; do not attempt to change the policy during finalization. This freeze is enforced through `status.finalizationPolicy`: the first finalization reconcile records the current `onDelete` into that immutable field, and every later reconcile finalizes from the recorded value, so a concurrent change to `spec.lifecycle.onDelete` during the terminating window (for example GitOps self-heal) cannot redirect finalization. A validating admission webhook would freeze `onDelete` directly and may be added as later hardening; it is intentionally avoided in v1 (section 4.5).
 
 ## 8. Error handling and recovery
 

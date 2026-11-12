@@ -90,13 +90,21 @@ Milestone 5 notes:
 
 ## Milestone 6 — Finalization
 
-- [ ] Implement `Retain` finalization using both identity checks.
-- [ ] Mark retained PVC metadata and detach it from active reconciliation as specified by design.
-- [ ] Do not claim retention succeeded if another actor has already initiated PVC deletion.
-- [ ] Implement `Delete` with PVC UID precondition.
-- [ ] Keep the request finalizer until the exact PVC is `NotFound`.
-- [ ] Treat mismatched ownership as a safety block; never delete an unverified claim.
-- [ ] Test repeated finalization, restart, delayed PVC protection, and policy-at-deletion behavior.
+- [x] Implement `Retain` finalization using both identity checks.
+- [x] Mark retained PVC metadata and detach it from active reconciliation as specified by design.
+- [x] Do not claim retention succeeded if another actor has already initiated PVC deletion.
+- [x] Implement `Delete` with PVC UID precondition.
+- [x] Keep the request finalizer until the exact PVC is `NotFound`.
+- [x] Treat mismatched ownership as a safety block; never delete an unverified claim.
+- [x] Test repeated finalization, restart, delayed PVC protection, and policy-at-deletion behavior.
+
+Milestone 6 notes:
+
+- Finalization lives in `internal/controller/finalize.go`. The PVC is read live (`APIReader`), never from the cache, because a deletion decision must not act on a stale view. Ownership is proven only when `CheckIdentity` returns `Verified` or `Unrecorded` (request-UID annotation matches, and the recorded PVC UID matches or is not yet recorded). The `onDelete` value is frozen once the request is deleting, so the cached request is authoritative for the policy.
+- `Retain` detaches the owned claim: it adds `storage.example.io/orphaned-from=<request UID>` and removes the active `storage.example.io/managed` label, then removes the finalizer. The claim and its data stay. An unprovable same-name claim is left untouched and finalization still completes (Retain changes nothing anyway); a claim already terminating under another actor gets a warning and is not falsely reported as retained.
+- `Delete` deletes only the exact claim, with a `metav1.Preconditions{UID}` so a same-name replacement is never deleted, and keeps the finalizer until the API server confirms the claim is `NotFound`. A claim whose ownership cannot be proven is a safety block: the finalizer is kept (the request stays `Terminating`) for an administrator to resolve, never deleted. PVC protection delaying deletion is waited out, never bypassed.
+- RBAC adds `persistentvolumeclaims` `delete`. Events: `StorageRetained`, `PVCDeletionRequested`, and Warnings (`OwnershipMismatch`, `PVCDeleting`) during finalization.
+- The deletion-time `onDelete` is frozen through the immutable `status.finalizationPolicy` (design section 7.4): the first finalization reconcile records the current policy, and every later reconcile finalizes from the recorded value. CRD CEL cannot read `metadata.deletionTimestamp`, so the freeze lives in status; this closes the window where a concurrent `onDelete` flip (for example GitOps self-heal) could redirect a terminating request to delete a data-bearing claim.
 
 ## Milestone 7 — Hardening and deployment
 

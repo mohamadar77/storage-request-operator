@@ -9,7 +9,8 @@ A map of the repository. The approved design at `docs/design.md` is the canonica
 - `api/v1alpha1/validation.go` — defensive Go validation of the spec
 - `api/v1alpha1/groupversion_info.go` — API group registration
 - `api/v1alpha1/zz_generated.deepcopy.go` — generated
-- `internal/controller/storagerequest_controller.go` — reconciliation logic
+- `internal/controller/storagerequest_controller.go` — reconciliation logic (create, identity, status, resize)
+- `internal/controller/finalize.go` — Retain/Delete finalization behind the finalizer
 - `internal/storage/pvc_builder.go` — deterministic desired-PVC builder
 - `internal/storage/identity.go` — request-UID and PVC-UID identity check
 - `internal/storage/resize.go` — PVC resize-state observation and the grow-only resize plan
