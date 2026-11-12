@@ -43,13 +43,51 @@ import (
 //     the finalizer is kept so an administrator resolves the conflict;
 //   - the finalizer is removed only after the selected policy has completed.
 //
-// The onDelete value is frozen once the request is being deleted, so the cached
-// StorageRequest is authoritative for the policy (design section 7.4).
+// The onDelete value is frozen once the request is being deleted (design section
+// 7.4), so the deletion-time policy controls finalization. CRD CEL cannot read
+// metadata.deletionTimestamp, so the freeze is carried by status: the first
+// finalization reconcile records the policy in the immutable
+// status.finalizationPolicy, and every later reconcile finalizes from that
+// recorded value rather than the spec. A concurrent change to
+// spec.lifecycle.onDelete during the terminating window (for example GitOps
+// self-heal) therefore cannot redirect finalization once it has started.
+//
+// finalize re-reads the StorageRequest live, because a deletion decision must
+// not act on a stale cache.
 func (r *StorageRequestReconciler) finalize(
-	ctx context.Context, sr *storagev1alpha1.StorageRequest,
+	ctx context.Context, cached *storagev1alpha1.StorageRequest,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	key := client.ObjectKeyFromObject(sr)
+	key := client.ObjectKeyFromObject(cached)
+
+	sr := &storagev1alpha1.StorageRequest{}
+	if err := r.APIReader.Get(ctx, key, sr); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if sr.UID != cached.UID || sr.DeletionTimestamp.IsZero() ||
+		!controllerutil.ContainsFinalizer(sr, storagev1alpha1.Finalizer) {
+		// The cached object was stale: it is not the same, not actually
+		// terminating, or already finalized. Let the next reconcile re-decide.
+		return ctrl.Result{RequeueAfter: staleCacheRequeue}, nil
+	}
+
+	// Capture the deletion-time policy exactly once. Everything below finalizes
+	// from status.finalizationPolicy, never from the (possibly flipped) spec.
+	if sr.Status.FinalizationPolicy == "" {
+		policy := sr.Spec.Lifecycle.OnDelete
+		if policy == "" {
+			policy = storagev1alpha1.OnDeleteRetain
+		}
+		base := sr.DeepCopy()
+		sr.Status.FinalizationPolicy = policy
+		if err := r.Status().Patch(ctx, sr, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return ctrl.Result{}, fmt.Errorf("recording the finalization policy: %w", err)
+		}
+		log.Info("Recorded finalization policy", "onDelete", policy)
+		// Act on the recorded policy on the next reconcile, so the freeze is in
+		// effect before any claim is detached or deleted.
+		return ctrl.Result{RequeueAfter: staleCacheRequeue}, nil
+	}
 
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.APIReader.Get(ctx, key, pvc)
@@ -69,7 +107,7 @@ func (r *StorageRequestReconciler) finalize(
 	// claim cannot be proven to belong to this request.
 	proven := identity == storage.IdentityVerified || identity == storage.IdentityUnrecorded
 
-	if sr.Spec.Lifecycle.OnDelete == storagev1alpha1.OnDeleteDelete {
+	if sr.Status.FinalizationPolicy == storagev1alpha1.OnDeleteDelete {
 		return r.finalizeDelete(ctx, sr, pvc, proven, mismatch)
 	}
 	return r.finalizeRetain(ctx, sr, pvc, proven, mismatch)

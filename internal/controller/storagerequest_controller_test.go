@@ -1528,6 +1528,14 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, key, &storagev1alpha1.StorageRequest{}))).To(BeTrue(),
 				"the StorageRequest should be gone once the finalizer is removed")
 		}
+		// recordPolicy runs the first finalization reconcile, which captures the
+		// deletion-time policy into status. Finalization acts on the next
+		// reconcile, with the policy already frozen.
+		recordPolicy := func() {
+			GinkgoHelper()
+			Expect(reconcileOnce().RequeueAfter).To(Equal(staleCacheRequeue))
+			Expect(getRequest().Status.FinalizationPolicy).NotTo(BeEmpty())
+		}
 		createDeleteRequest := func() *storagev1alpha1.StorageRequest {
 			GinkgoHelper()
 			sr := &storagev1alpha1.StorageRequest{
@@ -1554,11 +1562,35 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 			Expect(k8sClient.Patch(ctx, pvc, client.MergeFrom(base))).To(Succeed())
 		}
 
+		It("records the deletion-time policy and finalizes from it, ignoring a later onDelete flip", func() {
+			sr := createRequest() // Retain is the default
+			provision()
+			deleteRequest()
+
+			recordPolicy()
+			Expect(getRequest().Status.FinalizationPolicy).To(Equal(storagev1alpha1.OnDeleteRetain))
+
+			// A concurrent writer flips onDelete to Delete during termination.
+			flip := getRequest()
+			flip.Spec.Lifecycle.OnDelete = storagev1alpha1.OnDeleteDelete
+			Expect(k8sClient.Update(ctx, flip)).To(Succeed())
+
+			// Finalization still follows the recorded Retain: the claim is
+			// detached, never deleted.
+			reconcileOnce()
+
+			expectRequestGone()
+			retained := getPVC()
+			Expect(retained.DeletionTimestamp.IsZero()).To(BeTrue(), "the flip must not delete the claim")
+			Expect(retained.Annotations).To(HaveKeyWithValue(storagev1alpha1.AnnotationOrphanedFrom, string(sr.UID)))
+		})
+
 		Context("Retain", func() {
 			It("detaches the PVC and removes the finalizer, leaving the claim in place", func() {
 				sr := createRequest() // Retain is the default
 				pvc := provision()
 				deleteRequest()
+				recordPolicy()
 
 				result := reconcileOnce()
 
@@ -1577,6 +1609,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				provision()
 				removePVC()
 				deleteRequest()
+				recordPolicy()
 
 				reconcileOnce()
 
@@ -1588,6 +1621,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				reconcileOnce() // finalizer only; no PVC recorded
 				foreign := createForeignPVC("")
 				deleteRequest()
+				recordPolicy()
 
 				reconcileOnce()
 
@@ -1604,6 +1638,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				Expect(k8sClient.Delete(ctx, pvc)).To(Succeed()) // pvc-protection keeps it terminating
 				Expect(getPVC().DeletionTimestamp.IsZero()).To(BeFalse())
 				deleteRequest()
+				recordPolicy()
 
 				reconcileOnce()
 
@@ -1613,6 +1648,35 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 					"a terminating claim is not detached or marked retained")
 				Expect(drainEvents()).To(ContainElement(HavePrefix("Warning PVCDeleting ")))
 			})
+
+			It("is idempotent when finalizer removal fails after the detach", func() {
+				sr := createRequest()
+				provision()
+				deleteRequest()
+				recordPolicy()
+				// Fail only the StorageRequest patch (the finalizer removal); the
+				// PVC detach patch still goes through.
+				failSRPatch := interceptor.NewClient(k8sClient, interceptor.Funcs{
+					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch,
+						opts ...client.PatchOption) error {
+						if _, ok := obj.(*storagev1alpha1.StorageRequest); ok {
+							return errInjected
+						}
+						return c.Patch(ctx, obj, patch, opts...)
+					},
+				})
+
+				_, err := reconcileWith(failSRPatch)
+
+				Expect(err).To(MatchError(errInjected))
+				detached := getPVC()
+				Expect(detached.Annotations).To(HaveKeyWithValue(storagev1alpha1.AnnotationOrphanedFrom, string(sr.UID)))
+				Expect(controllerutil.ContainsFinalizer(getRequest(), storagev1alpha1.Finalizer)).To(BeTrue())
+
+				// A retry completes idempotently.
+				reconcileOnce()
+				expectRequestGone()
+			})
 		})
 
 		Context("Delete", func() {
@@ -1620,9 +1684,10 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				createDeleteRequest()
 				provision()
 				deleteRequest()
+				recordPolicy()
 
-				// The first reconcile requests deletion; pvc-protection keeps the
-				// claim terminating until the protection finalizer is cleared.
+				// This reconcile requests deletion; pvc-protection keeps the claim
+				// terminating until the protection finalizer is cleared.
 				Expect(reconcileOnce().RequeueAfter).To(Equal(staleCacheRequeue))
 				Expect(getPVC().DeletionTimestamp.IsZero()).To(BeFalse())
 				Expect(getRequest().DeletionTimestamp.IsZero()).To(BeFalse(), "the request waits for the claim")
@@ -1639,6 +1704,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				createDeleteRequest()
 				provision()
 				deleteRequest()
+				recordPolicy()
 				reconcileOnce() // requests deletion
 
 				Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue), "still terminating")
@@ -1653,6 +1719,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				reconcileOnce() // finalizer only; nothing recorded
 				foreign := createForeignPVC("")
 				deleteRequest()
+				recordPolicy()
 
 				Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue))
 
@@ -1671,6 +1738,7 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				replacement := createForeignPVC(string(sr.UID)) // request-UID copied, new PVC UID
 				Expect(replacement.UID).NotTo(Equal(original.UID))
 				deleteRequest()
+				recordPolicy()
 
 				Expect(reconcileOnce().RequeueAfter).To(Equal(fallbackRequeue))
 
@@ -1678,6 +1746,32 @@ var _ = Describe("StorageRequest controller: PVC creation and identity", func() 
 				Expect(got.UID).To(Equal(replacement.UID))
 				Expect(got.DeletionTimestamp.IsZero()).To(BeTrue(), "the replacement must not be deleted")
 				Expect(controllerutil.ContainsFinalizer(getRequest(), storagev1alpha1.Finalizer)).To(BeTrue())
+			})
+
+			It("re-reads when the delete UID precondition fails, keeping the finalizer", func() {
+				createDeleteRequest()
+				provision()
+				deleteRequest()
+				recordPolicy()
+				// The exact TOCTOU the precondition guards: the apiserver rejects
+				// the delete with a conflict because the claim changed.
+				conflictDelete := interceptor.NewClient(k8sClient, interceptor.Funcs{
+					Delete: func(ctx context.Context, c client.WithWatch, obj client.Object,
+						opts ...client.DeleteOption) error {
+						if isPVC(obj) {
+							return apierrors.NewConflict(schema.GroupResource{Resource: resourcePVC},
+								obj.GetName(), errors.New("UID precondition failed"))
+						}
+						return c.Delete(ctx, obj, opts...)
+					},
+				})
+
+				result, err := reconcileWith(conflictDelete)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).To(Equal(staleCacheRequeue))
+				Expect(controllerutil.ContainsFinalizer(getRequest(), storagev1alpha1.Finalizer)).To(BeTrue())
+				Expect(getPVC().DeletionTimestamp.IsZero()).To(BeTrue(), "the real claim is untouched")
 			})
 		})
 	})

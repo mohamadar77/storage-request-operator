@@ -104,6 +104,7 @@ Milestone 6 notes:
 - `Retain` detaches the owned claim: it adds `storage.example.io/orphaned-from=<request UID>` and removes the active `storage.example.io/managed` label, then removes the finalizer. The claim and its data stay. An unprovable same-name claim is left untouched and finalization still completes (Retain changes nothing anyway); a claim already terminating under another actor gets a warning and is not falsely reported as retained.
 - `Delete` deletes only the exact claim, with a `metav1.Preconditions{UID}` so a same-name replacement is never deleted, and keeps the finalizer until the API server confirms the claim is `NotFound`. A claim whose ownership cannot be proven is a safety block: the finalizer is kept (the request stays `Terminating`) for an administrator to resolve, never deleted. PVC protection delaying deletion is waited out, never bypassed.
 - RBAC adds `persistentvolumeclaims` `delete`. Events: `StorageRetained`, `PVCDeletionRequested`, and Warnings (`OwnershipMismatch`, `PVCDeleting`) during finalization.
+- The deletion-time `onDelete` is frozen through the immutable `status.finalizationPolicy` (design section 7.4): the first finalization reconcile records the current policy, and every later reconcile finalizes from the recorded value. CRD CEL cannot read `metadata.deletionTimestamp`, so the freeze lives in status; this closes the window where a concurrent `onDelete` flip (for example GitOps self-heal) could redirect a terminating request to delete a data-bearing claim.
 
 ## Milestone 7 — Hardening and deployment
 

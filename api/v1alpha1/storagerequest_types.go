@@ -240,6 +240,16 @@ type StorageRequestStatus struct {
 	// +optional
 	PVCUID types.UID `json:"pvcUID,omitempty"`
 
+	// finalizationPolicy is the onDelete value captured when finalization began.
+	// It is recorded on the first finalization reconcile and is immutable
+	// afterwards (enforced by the CRD), so a change to spec.lifecycle.onDelete
+	// during the terminating window cannot redirect finalization. This is how
+	// the deletion-time policy is frozen (design section 7.4): CRD CEL cannot
+	// read metadata.deletionTimestamp, so the freeze is carried by this field.
+	// +optional
+	// +kubebuilder:validation:Enum=Retain;Delete
+	FinalizationPolicy OnDeletePolicy `json:"finalizationPolicy,omitempty"`
+
 	// pvcPhase is the observed PVC phase (Pending, Bound, or Lost) when a PVC
 	// exists. It is omitted when no PVC exists; absence is expressed by a
 	// condition, not a fabricated phase.
@@ -268,6 +278,7 @@ type StorageRequestStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.pvcUID) || (has(self.status) && has(self.status.pvcUID) && self.status.pvcUID == oldSelf.status.pvcUID)",message="status.pvcUID is immutable once set"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.finalizationPolicy) || (has(self.status) && has(self.status.finalizationPolicy) && self.status.finalizationPolicy == oldSelf.status.finalizationPolicy)",message="status.finalizationPolicy is immutable once set"
 // +kubebuilder:printcolumn:name="Requested",type=string,JSONPath=`.spec.storage.size`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.pvcPhase`
 // +kubebuilder:printcolumn:name="Capacity",type=string,JSONPath=`.status.capacity`

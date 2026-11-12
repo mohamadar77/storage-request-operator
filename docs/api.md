@@ -49,6 +49,7 @@ Supported access modes are `ReadWriteOnce`, `ReadOnlyMany`, `ReadWriteMany`, and
 | `status.observedGeneration` | Spec generation last processed. |
 | `status.pvcName` | Managed PVC name (same as request name). |
 | `status.pvcUID` | UID of the exact PVC object incarnation; once set, retained for the request lifetime. |
+| `status.finalizationPolicy` | The `onDelete` value captured when finalization began; immutable once set, so a later `onDelete` change cannot redirect deletion. |
 | `status.pvcPhase` | Observed PVC phase (`Pending`, `Bound`, `Lost`) when a PVC exists. |
 | `status.volumeName` | Bound PV name when available. |
 | `status.capacity` | Actual capacity reported by PVC status, not the requested target. |
