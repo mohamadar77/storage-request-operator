@@ -87,15 +87,18 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # Sized for the default cluster-scoped install, whose cache holds every
+        # managed PersistentVolumeClaim in the cluster. Scope the cache with
+        # --watch-namespaces (see docs/deployment-hardening.md) to run with a
+        # smaller limit; raise the limit for very large clusters after measuring
+        # actual reconcile load.
         resources:
           limits:
             cpu: 500m
-            memory: 128Mi
+            memory: 256Mi
           requests:
             cpu: 10m
-            memory: 64Mi
+            memory: 128Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager

@@ -2,7 +2,7 @@
 
 A Kubernetes Operator that manages one `PersistentVolumeClaim` (PVC) for each namespaced `StorageRequest`, with ownership-safe reconciliation, capacity expansion, lifecycle status, and explicit retention behavior.
 
-> **Project status:** Under active implementation against the approved v1alpha1 design. Milestones 1–6 are complete (scaffold, API, PVC creation/identity, watches/status/events, safe updates/resize, and Retain/Delete finalization); see the roadmap below. Hardening (milestone 7) and CSI-backed end-to-end tests (milestone 8) remain, so the operator is not yet production-ready: run it only against a disposable test cluster until those milestones and the release checklist are complete.
+> **Project status:** Under active implementation against the approved v1alpha1 design. Milestones 1–7 are complete (scaffold, API, PVC creation/identity, watches/status/events, safe updates/resize, Retain/Delete finalization, and deployment hardening); see the roadmap below. CSI-backed end-to-end tests and the release steps (milestone 8) remain, so the operator is not yet production-ready: run it only against a disposable test cluster until milestone 8 and the release checklist are complete.
 
 ## What it does
 
@@ -75,7 +75,7 @@ The API details and status semantics are documented in [`docs/api.md`](docs/api.
 | 4 | PVC watches, status conditions, events | Complete |
 | 5 | Immutable-field checks, expansion and failed-resize recovery | Complete |
 | 6 | Retain/Delete finalization | Complete |
-| 7 | RBAC, leader election, probes, metrics, hardening | Not started |
+| 7 | RBAC, leader election, probes, metrics, hardening | Complete |
 | 8 | CSI-backed E2E tests, user guide, operational troubleshooting | Not started |
 
 The detailed task breakdown is in [`docs/implementation-plan.md`](docs/implementation-plan.md). The project is not production-ready until all acceptance criteria in the design and release checklist pass.

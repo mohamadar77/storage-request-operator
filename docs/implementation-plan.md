@@ -108,13 +108,21 @@ Milestone 6 notes:
 
 ## Milestone 7 — Hardening and deployment
 
-- [ ] Generate least-privilege RBAC for requests, status, PVCs, StorageClasses, and Events.
-- [ ] Verify no PV, Pod, Node, Secret, or CSI-resource permissions are granted.
-- [ ] Configure leader election for multi-replica deployment.
-- [ ] Add probes, secured metrics, resource requests/limits, and graceful shutdown.
-- [ ] Scope caches/watches to authorized namespaces where supported by the deployment model.
-- [ ] Review tenant policy, ResourceQuota, LimitRange, and StorageClass allowlisting guidance.
-- [ ] Add structured logs without high-cardinality metric labels.
+- [x] Generate least-privilege RBAC for requests, status, PVCs, StorageClasses, and Events.
+- [x] Verify no PV, Pod, Node, Secret, or CSI-resource permissions are granted.
+- [x] Configure leader election for multi-replica deployment.
+- [x] Add probes, secured metrics, resource requests/limits, and graceful shutdown.
+- [x] Scope caches/watches to authorized namespaces where supported by the deployment model.
+- [x] Review tenant policy, ResourceQuota, LimitRange, and StorageClass allowlisting guidance.
+- [x] Add structured logs without high-cardinality metric labels.
+
+Milestone 7 notes:
+
+- Most hardening came with the milestone-1 scaffold and was verified here: least-privilege RBAC (no PV/Pod/Node/Secret/CSI access; the controller patches only, so no `update` on the custom resource), `--leader-elect`, liveness/readiness probes, auth-gated metrics over HTTPS with HTTP/2 disabled, resource requests/limits, graceful shutdown, non-root pod with a read-only root filesystem and all capabilities dropped, and structured logs with no high-cardinality metric labels.
+- New: a `--watch-namespaces` flag scopes the informer cache (and watches) to a comma-separated namespace list via `cache.Options.DefaultNamespaces`; empty keeps the cluster-scoped default (design section 11). `watchNamespaceConfig` is unit tested. A namespace-scoped install uses namespaced RoleBindings except for the cluster-scoped `storageclasses` `get`.
+- New: `LeaderElectionReleaseOnCancel` is enabled (safe because every action is idempotent and nothing runs after the manager stops), so failover does not wait out the full lease.
+- The manager memory limit was raised to 256Mi (request 128Mi) for the default cluster-scoped cache, which holds every managed PVC; namespace scoping or measured tuning adjusts it.
+- Operational guidance (RBAC, namespace scoping, HA, probes/metrics, resource sizing, pod security, and tenant policy / ResourceQuota / LimitRange / StorageClass allowlisting) is collected in `docs/deployment-hardening.md`.
 
 ## Milestone 8 — E2E, documentation, and release
 

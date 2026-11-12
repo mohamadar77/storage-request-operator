@@ -38,6 +38,7 @@ A map of the repository. The approved design at `docs/design.md` is the canonica
 - `docs/design.md` — approved design (normative)
 - `docs/adr/0001-storage-request-pvc-lifecycle.md`
 - `docs/api.md`, `docs/architecture.md`, `docs/operational-safety.md` — summaries of the design
+- `docs/deployment-hardening.md` — RBAC, namespace scoping, HA, metrics, resource sizing, and tenant-policy guidance
 - `docs/implementation-plan.md`, `docs/testing-strategy.md`, `docs/release-checklist.md`
 - `docs/development.md`, `docs/repository-setup.md`
 
