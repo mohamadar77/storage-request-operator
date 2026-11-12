@@ -522,11 +522,13 @@ The controller needs the minimum permissions required for its responsibilities:
 
 | Resource | Verbs | Reason |
 |---|---|---|
-| `storagerequests` | `get`, `list`, `watch`, `update`, `patch` | Read requests and maintain finalizers |
-| `storagerequests/status` | `get`, `update`, `patch` | Publish status |
+| `storagerequests` | `get`, `list`, `watch`, `patch` | Read requests and maintain finalizers |
+| `storagerequests/status` | `get`, `patch` | Publish status |
 | `persistentvolumeclaims` | `get`, `list`, `watch`, `create`, `patch`, `delete` | Create, observe, resize, mark, and delete only the corresponding PVC |
 | `storageclasses` | `get` | Check `allowVolumeExpansion` before a bound-claim resize |
 | `events` | `create`, `patch` | Publish user-visible Kubernetes Events |
+
+The controller writes requests and their status only through optimistic-lock merge patches, so `update` is not granted on either resource; this keeps the role at the least privilege the design requires.
 
 The operator does **not** need permissions to create/update/delete PVs, Pods, Nodes, Secrets, `VolumeAttachment` objects, or CSI resources for this design.
 
