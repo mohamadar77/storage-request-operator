@@ -20,6 +20,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Milestone 5 review follow-ups: a resize patch the API server refuses outright (`Invalid`/`Forbidden`) is reported as `ResizeRejected` instead of looping in backoff with no condition; the design's unbound-grow wording is corrected to say such an increase is deferred until the claim binds (Kubernetes forbids the request change before bind).
 - Milestone 5: safe spec updates. Immutable StorageClass/access-mode/volume-mode changes are reported (`ImmutableFieldChange`) and never replace the claim. Capacity is grow-only: a larger size is deferred while unbound and, once bound, patched onto `PVC.spec.resources.requests.storage` only when the resolved StorageClass allows expansion (`ExpansionNotSupported`, `StorageClassNotFound` otherwise). A decrease is rejected (`ShrinkNotSupported`) except the design 6.4 recovery from a terminal resize failure to a target above the actual capacity (`ResizeRecoveryRejected` otherwise). RBAC adds PVC `patch` and StorageClass `get`.
 - Milestone 6: finalization. On deletion the operator runs the request's `onDelete` policy behind its finalizer. `Retain` (default) detaches the owned PVC (`storage.example.io/orphaned-from` annotation, managed label removed) and leaves it; `Delete` removes only the exact owned PVC with a UID precondition and keeps the finalizer until the claim is `NotFound`. Ownership is proven from the request-UID annotation and recorded PVC UID; an unprovable claim is never deleted (Delete keeps the finalizer for an administrator; Retain leaves the claim and completes). Events `StorageRetained`/`PVCDeletionRequested`; RBAC adds PVC `delete`. The deletion-time policy is frozen through the immutable `status.finalizationPolicy`, recorded on the first finalization reconcile, so a concurrent `onDelete` change during termination cannot redirect finalization.
+- Milestone 7: deployment hardening. Verified least-privilege RBAC (no PV/Pod/Node/Secret/CSI access), leader election, probes, auth-gated HTTPS metrics, non-root/read-only pod security, and no high-cardinality metric labels. Added a `--watch-namespaces` flag to scope the informer cache (design section 11), enabled `LeaderElectionReleaseOnCancel` for faster failover, raised the manager memory limit to 256Mi for the cluster-scoped cache, and added `docs/deployment-hardening.md` (RBAC, namespace scoping, HA, metrics, resource sizing, tenant policy/quota/allowlist guidance).
 
 ### Changed
 
@@ -27,5 +28,4 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Not yet implemented
 
-- Remaining operational hardening (milestone 7).
 - CSI-backed end-to-end tests (milestone 8).

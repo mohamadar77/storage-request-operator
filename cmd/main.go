@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -29,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -39,6 +41,24 @@ import (
 	"github.com/mohamadar77/storage-request-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
+
+// watchNamespaceConfig turns a comma-separated namespace list into the cache's
+// DefaultNamespaces map. An empty or whitespace-only list returns nil, which
+// leaves the cache cluster-scoped (watching all namespaces). Scoping the cache
+// to the namespaces the operator is authorized to manage shrinks its memory
+// footprint and the access it needs (design section 11).
+func watchNamespaceConfig(list string) map[string]cache.Config {
+	namespaces := map[string]cache.Config{}
+	for ns := range strings.SplitSeq(list, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			namespaces[ns] = cache.Config{}
+		}
+	}
+	if len(namespaces) == 0 {
+		return nil
+	}
+	return namespaces
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -82,6 +102,11 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var watchNamespaces string
+	flag.StringVar(&watchNamespaces, "watch-namespaces", "",
+		"Comma-separated list of namespaces to watch and cache. Empty (the default) watches all namespaces. "+
+			"Scope this to the namespaces the operator is authorized to manage to reduce its cache footprint; "+
+			"a namespace-scoped install also needs namespaced RoleBindings instead of the cluster-wide binding.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -165,17 +190,18 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "8bca80ad.example.io",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		// All actions are idempotent and no cleanup runs after the manager
+		// stops, so a leader may step down voluntarily on shutdown. The binary
+		// exits immediately once Start returns (below), which this requires, and
+		// it speeds up failover: the next leader does not wait out the full
+		// lease duration.
+		LeaderElectionReleaseOnCancel: true,
+		// Cache (and therefore watch) scope. Empty DefaultNamespaces keeps the
+		// cluster-scoped default; watchNamespaceConfig narrows it when the
+		// operator is installed for specific namespaces (design section 11).
+		Cache: cache.Options{
+			DefaultNamespaces: watchNamespaceConfig(watchNamespaces),
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
