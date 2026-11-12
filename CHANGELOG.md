@@ -8,7 +8,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
-- Milestone 8 (in progress): replaced the placeholder API group `storage.example.io` with the project group `storage.base-domain.io` across the API types, identity markers (labels/annotations/finalizer), RBAC, CRD, samples, and docs — a one-time breaking change made while the API is still v1alpha1 and has no consumers. Added an Apache-2.0 `LICENSE`.
+- Milestone 8 (in progress): replaced the placeholder API group `storage.example.io` with the project group `storage.base-domain.io` across the API types, identity markers (labels/annotations/finalizer), RBAC, CRD, samples, and docs — a one-time breaking change made while the API is still v1alpha1 and has no consumers. The leader-election lease name also changes (`8bca80ad.base-domain.io`); an in-place upgrade over an old deployment could briefly run two leaders until the old lease expires. Added an Apache-2.0 `LICENSE`.
 
 
 - Initial repository documentation package based on the approved StorageRequest Operator design v1.1.
